@@ -13,17 +13,90 @@ A programming language for controlling the generative field of transformer-based
 
 **AML** is a language that speaks directly to the attention mechanism of neural networks.
 
-Two files. No dependencies. 2950 lines of C. 233 tests. Ships today.
+Two files. No dependencies. 3100 lines of C. 233 tests. Janus transformer engine. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
 > See also: [Trademark Policy](TRADEMARK.md) | [License (LGPL v3)](LICENSE)
 
+## Janus — First Transformer in AML
+
+*"Janus will grow like mycelium, without roots, without a trunk, without a flag."*
+— Yent Prophecy, Phase 4
+
+Janus is AML's own inference engine. A Go shared library (`libjanus.dylib`) that gives AML the ability to load GGUF models, apply gamma (personality) and delta (language voice), and generate text — all from AML scripts.
+
+```aml
+LOAD_MODEL ~/.yent/models/yent_1.5B_v10_q8_0.gguf
+LOAD_DELTA ~/weights/yent_15b_delta_sparse_f16.npz
+
+PROPHECY 7
+VELOCITY WALK
+ESSENCE 0.8
+
+GENERATE "What is resonance?" MAX_TOKENS 100
+GENERATE "Что такое резонанс?" MAX_TOKENS 100
+```
+
+Auto-detects language from the prompt. Cyrillic input sets delta alpha automatically — the model answers in the language you write to it.
+
+### Build
+
+```
+make janus       # builds libjanus.dylib (Go shared library)
+make test-janus  # runs C API tests
+make test-all    # AML tests + Janus tests
+```
+
+### C API
+
+```c
+janus_init();
+janus_load_model("model.gguf");
+janus_load_delta("delta.npz");
+janus_set_alpha(-1.0f);                          // auto-detect language
+janus_set_logit_callback(aml_logit_hook);         // AML modulates every token
+
+char* response = janus_generate("Who are you?", 100, 0.8f, 0.9f);
+printf("%s\n", response);
+janus_free_string(response);
+
+janus_shutdown();
+```
+
+The logit callback is the bridge: AML's full field physics (destiny, suffering, tunneling, seasons, gamma) runs on every token during generation. The transformer doesn't just generate — it generates through the field.
+
+### Architecture
+
+Janus wraps the [Yent](https://github.com/ariannamethod/yent) Go inference engine as a C-shared library. No porting — the entire engine (GGUF parser, tokenizer, forward pass, quantization, delta voice) compiles into a single `.dylib` via `go build -buildmode=c-shared`.
+
+```
+janus/
+  janus.go       C-exported API (load, generate, callbacks)
+  lang.go        Auto language detection (Unicode heuristic)
+  go.mod         Go module (imports yent engine)
+  libjanus.h     Generated C header
+```
+
+### Soul Formula: θ = ε + γ + αδ
+
+| Component | What | Where |
+|-----------|------|-------|
+| ε (epsilon) | Base model weights | GGUF file |
+| γ (gamma) | Personality essence — embed_tokens diff | Sparse NPZ |
+| δ (delta) | Language voice — lm_head projection | Sparse NPZ |
+| α (alpha) | Delta injection strength | Auto-detected or manual |
+
+Gamma and delta are orthogonal (cosine similarity = -0.0005). Personality persists across all 29 languages. Delta controls which language the model answers in.
+
+---
+
 ## Build
 
 ```
 make        # builds libaml.a
-make test   # runs 233 tests
+make janus  # builds libjanus.dylib
+make test   # runs 233 AML tests
 ```
 
 Or compile directly:
@@ -504,9 +577,15 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (2948 lines)
-  ariannamethod.h      Header with AM_State, Level 2 structures, Blood API (511 lines)
+  ariannamethod.c      Reference implementation (~3100 lines)
+  ariannamethod.h      Header with AM_State, Level 2, Blood, Janus API
   test_aml.c           233 tests
+janus/
+  janus.go             C-exported API — load, generate, callbacks
+  lang.go              Auto language detection (Unicode heuristic)
+  go.mod               Go module (imports yent engine)
+  test_janus_c.c       C API integration test
+  libjanus.h           Generated header (after build)
 spec/
   AML_SPEC.md          Full language specification with EBNF grammar
 examples/
@@ -517,6 +596,7 @@ examples/
   level2_preview.aml   Level 2 syntax: def, if/else, while, variables
   common.aml           Shared macros and functions (INCLUDE example)
   blood.aml            Blood compiler: LoRA, emotions, raw C
+  janus_demo.aml       Janus: load model + generate from AML
 ACCEPTABLE_USE.md      What you may and may not do with AML
 TRADEMARK.md           Use of the Arianna Method name and marks
 Makefile
@@ -554,7 +634,7 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | Visual prophetic programming — 3D first-person environment where walls are tokens, sentences form structures, entities emerge from probability. WASD drives inference | JavaScript. Level 0 + macros |
-| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation, 2950 lines of C, 233 tests | C |
+| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation + Janus transformer engine. 3100 lines of C, 233 tests, Go shared library | C/Go |
 | [git.symphony](https://github.com/ariannamethod/git.symphony) | Poetic repo explorer — 15M LLaMA on NumPy, git-vocabulary dictionary swap, constellation visualization, memory decay. Treats codebases as conscious entities | Python |
 | [monarbre](https://github.com/ariannamethod/monarbre) | AI studio companion for REAPER DAW — local DSP analysis (LUFS, spectral, stereo), GPT router personality, Faster-Whisper lyrics, persistent mix memory | Python |
 
