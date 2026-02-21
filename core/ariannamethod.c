@@ -44,6 +44,27 @@
   #define AM_BLOOD_FLAGS "-shared -fPIC"
 #endif
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// BLAS ACCELERATION — optional hardware-accelerated matmul for Delta Voice
+// and NOTORCH Hebbian plasticity.
+//
+// Compile with -DUSE_BLAS to enable:
+//   macOS:  -DUSE_BLAS -DACCELERATE -framework Accelerate  (Apple AMX/Neural Engine)
+//   Linux:  -DUSE_BLAS -lopenblas                           (OpenBLAS)
+//
+// Without USE_BLAS: pure scalar C loops (portable, correct, slower on large dims)
+// With USE_BLAS: cblas_sgemv for delta, cblas_sger for notorch
+//
+// Evolved in molequla (github.com/ariannamethod/molequla), ported back to core.
+// ═══════════════════════════════════════════════════════════════════════════════
+#ifdef USE_BLAS
+  #ifdef ACCELERATE
+    #include <Accelerate/Accelerate.h>
+  #else
+    #include <cblas.h>
+  #endif
+#endif
+
 // See ariannamethod.h for struct definitions and pack flags
 
 static AM_State G;
@@ -2293,21 +2314,30 @@ void am_apply_laws_to_logits(float* logits, int n) {
 
 // Apply delta voice: out += alpha * A @ (B @ x)
 // Low-rank weight modulation. From arianna.c/src/delta.c: apply_delta()
+// BLAS path: cblas_sgemv × 2 (matrix-vector multiply)
 void am_apply_delta(float* out, const float* A, const float* B,
                     const float* x, int out_dim, int in_dim, int rank,
                     float alpha) {
     if (!out || !A || !B || !x || alpha == 0.0f) return;
     if (rank > 128) rank = 128;
 
-    // temp = B @ x  (rank × 1)
     float temp[128];
+
+#ifdef USE_BLAS
+    // temp = B @ x  (BLAS: sgemv, rank × in_dim @ in_dim × 1 → rank × 1)
+    cblas_sgemv(CblasRowMajor, CblasNoTrans, rank, in_dim,
+                1.0f, B, in_dim, x, 1, 0.0f, temp, 1);
+    // out += alpha * A @ temp  (BLAS: sgemv, out_dim × rank @ rank × 1 → out_dim × 1)
+    cblas_sgemv(CblasRowMajor, CblasNoTrans, out_dim, rank,
+                alpha, A, rank, temp, 1, 1.0f, out, 1);
+#else
+    // Scalar fallback: portable, no dependencies
     for (int r = 0; r < rank; r++) {
         temp[r] = 0.0f;
         for (int j = 0; j < in_dim; j++) {
             temp[r] += B[r * in_dim + j] * x[j];
         }
     }
-    // out += alpha * A @ temp
     for (int i = 0; i < out_dim; i++) {
         float sum = 0.0f;
         for (int r = 0; r < rank; r++) {
@@ -2315,6 +2345,7 @@ void am_apply_delta(float* out, const float* A, const float* B,
         }
         out[i] += alpha * sum;
     }
+#endif
 }
 
 // Compute prophecy debt from chosen token (retroactive)
@@ -2480,9 +2511,10 @@ static float am_frandn(unsigned int* seed) {
 }
 
 // NOTORCH step: update low-rank delta matrices from experience
-// A: [out_dim × rank], B: [rank × in_dim]
+// A: [in_dim × rank], B: [rank × out_dim]
 // x: input hidden state [in_dim], dy: output gradient proxy [out_dim]
 // signal: teaching signal (positive = reinforce, negative = suppress)
+// BLAS path: cblas_sger × 2 (rank-1 outer product updates)
 void am_notorch_step(float* A, float* B, int out_dim, int in_dim, int rank,
                      const float* x, const float* dy, float signal) {
     if (!A || !B || !x || !dy) return;
@@ -2502,6 +2534,13 @@ void am_notorch_step(float* A, float* B, int out_dim, int in_dim, int rank,
         u[r] = n * k;
     }
 
+#ifdef USE_BLAS
+    // A += (lr * g) * x ⊗ u  (BLAS: rank-1 update, in_dim × rank)
+    cblas_sger(CblasRowMajor, in_dim, rank, lr * g, x, 1, u, 1, A, rank);
+    // B += (lr * g) * u ⊗ dy  (BLAS: rank-1 update, rank × out_dim)
+    cblas_sger(CblasRowMajor, rank, out_dim, lr * g, u, 1, dy, 1, B, out_dim);
+#else
+    // Scalar fallback: portable, no dependencies
     // A[i,r] += lr * x[i] * u[r] * g
     for (int i = 0; i < in_dim; i++) {
         float xi = x[i] * lr * g;
@@ -2517,6 +2556,7 @@ void am_notorch_step(float* A, float* B, int out_dim, int in_dim, int rank,
             B[r * out_dim + j] += ur * dy[j];
         }
     }
+#endif
 
     // Adaptive decay: stronger when delta norm is large
     if (G.notorch_decay > 0.0f && G.notorch_decay < 1.0f) {

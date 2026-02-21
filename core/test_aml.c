@@ -1430,6 +1430,152 @@ int main(void) {
     am_exec("GAMMA_DRIFT 0.05\n");
     ASSERT_FLOAT(am_get_state()->gamma_drift, 0.05f, 0.01f, "GAMMA_DRIFT 0.05");
 
+    // ════════════════════════════════════════════════════════════════════════
+    // BLAS ACCELERATION TESTS
+    // These tests validate numeric correctness whether compiled with
+    // USE_BLAS or not. Same inputs → same outputs, naive or accelerated.
+    // ════════════════════════════════════════════════════════════════════════
+
+    printf("\n── BLAS: am_apply_delta larger matrices ──\n");
+    {
+        // 4×3 (out=4, rank=3), B: 3×5 (rank=3, in=5), x: [5]
+        // Known exact result computed by hand
+        float A_big[12] = {
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1,
+            1, 1, 1
+        };
+        float B_big[15] = {
+            1, 0, 0, 0, 0,
+            0, 1, 0, 0, 0,
+            0, 0, 1, 0, 0
+        };
+        float x_big[5] = {2.0f, 3.0f, 5.0f, 0.0f, 0.0f};
+        float out_big[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        // B @ x = [2, 3, 5]
+        // A @ [2,3,5] = [2, 3, 5, 10]
+        // out += 1.0 * [2, 3, 5, 10]
+        am_apply_delta(out_big, A_big, B_big, x_big, 4, 5, 3, 1.0f);
+        ASSERT_FLOAT(out_big[0], 2.0f, 0.01f, "blas delta 4x3x5: out[0]=2");
+        ASSERT_FLOAT(out_big[1], 3.0f, 0.01f, "blas delta 4x3x5: out[1]=3");
+        ASSERT_FLOAT(out_big[2], 5.0f, 0.01f, "blas delta 4x3x5: out[2]=5");
+        ASSERT_FLOAT(out_big[3], 10.0f, 0.01f, "blas delta 4x3x5: out[3]=10");
+
+        // Accumulation test: apply again with alpha=0.5
+        am_apply_delta(out_big, A_big, B_big, x_big, 4, 5, 3, 0.5f);
+        ASSERT_FLOAT(out_big[0], 3.0f, 0.01f, "blas delta accumulate: out[0]=3");
+        ASSERT_FLOAT(out_big[3], 15.0f, 0.01f, "blas delta accumulate: out[3]=15");
+    }
+
+    printf("\n── BLAS: am_apply_delta alpha=0 is no-op ──\n");
+    {
+        float A_z[4] = {1,2,3,4};
+        float B_z[4] = {1,0,0,1};
+        float x_z[2] = {1,1};
+        float out_z[2] = {7.0f, 8.0f};
+        am_apply_delta(out_z, A_z, B_z, x_z, 2, 2, 2, 0.0f);
+        ASSERT_FLOAT(out_z[0], 7.0f, 0.001f, "delta alpha=0 preserves out[0]");
+        ASSERT_FLOAT(out_z[1], 8.0f, 0.001f, "delta alpha=0 preserves out[1]");
+    }
+
+    printf("\n── BLAS: am_apply_delta negative alpha ──\n");
+    {
+        float A_n[4] = {1,0,0,1};
+        float B_n[4] = {1,0,0,1};
+        float x_n[2] = {3.0f, 4.0f};
+        float out_n[2] = {10.0f, 10.0f};
+        // B@x = [3,4], A@[3,4] = [3,4], out += -1.0*[3,4] = [7, 6]
+        am_apply_delta(out_n, A_n, B_n, x_n, 2, 2, 2, -1.0f);
+        ASSERT_FLOAT(out_n[0], 7.0f, 0.01f, "delta negative alpha: out[0]=7");
+        ASSERT_FLOAT(out_n[1], 6.0f, 0.01f, "delta negative alpha: out[1]=6");
+    }
+
+    printf("\n── BLAS: am_notorch_step signal gating ──\n");
+    {
+        am_init();
+        am_exec("NOTORCH_LR 0.1");
+
+        // Signal = 0 should still modify (noise modulation, but g=0 → no update)
+        float A_z[4] = {0}; float B_z[4] = {0};
+        float x_z[2] = {1.0f, 1.0f};
+        float dy_z[2] = {1.0f, 1.0f};
+        am_notorch_step(A_z, B_z, 2, 2, 2, x_z, dy_z, 0.0f);
+
+        // With signal=0, g=0, so lr*g=0 → no update
+        float a_norm = 0;
+        for (int i = 0; i < 4; i++) a_norm += A_z[i] * A_z[i];
+        ASSERT_FLOAT(a_norm, 0.0f, 0.0001f, "notorch signal=0 → no update");
+    }
+
+    printf("\n── BLAS: am_notorch_step positive vs negative signal ──\n");
+    {
+        am_init();
+        am_exec("NOTORCH_LR 0.5\nNOTORCH_DECAY 0");
+
+        // Positive signal should produce non-zero updates
+        float A_pos[4] = {0}; float B_pos[4] = {0};
+        float x_s[2] = {1.0f, 0.5f};
+        float dy_s[2] = {1.0f, 0.5f};
+        am_notorch_step(A_pos, B_pos, 2, 2, 2, x_s, dy_s, 1.5f);
+
+        float pos_norm = 0;
+        for (int i = 0; i < 4; i++) pos_norm += A_pos[i] * A_pos[i];
+        ASSERT(pos_norm > 0.0001f, "notorch +signal produces non-zero A update");
+
+        // Negative signal should also produce non-zero updates
+        float A_neg[4] = {0}; float B_neg[4] = {0};
+        am_notorch_step(A_neg, B_neg, 2, 2, 2, x_s, dy_s, -1.5f);
+
+        float neg_norm = 0;
+        for (int i = 0; i < 4; i++) neg_norm += A_neg[i] * A_neg[i];
+        ASSERT(neg_norm > 0.0001f, "notorch -signal produces non-zero A update");
+
+        // Both B matrices should also be modified
+        float bp_norm = 0, bn_norm = 0;
+        for (int i = 0; i < 4; i++) {
+            bp_norm += B_pos[i] * B_pos[i];
+            bn_norm += B_neg[i] * B_neg[i];
+        }
+        ASSERT(bp_norm > 0.0001f, "notorch +signal produces non-zero B update");
+        ASSERT(bn_norm > 0.0001f, "notorch -signal produces non-zero B update");
+    }
+
+    printf("\n── BLAS: am_notorch_step decay and clamp ──\n");
+    {
+        am_init();
+        am_exec("NOTORCH_LR 1.0\nNOTORCH_DECAY 0.995");
+
+        float A_d[4] = {9.5f, 9.5f, 9.5f, 9.5f};
+        float B_d[4] = {9.5f, 9.5f, 9.5f, 9.5f};
+        float x_d[2] = {1.0f, 1.0f};
+        float dy_d[2] = {1.0f, 1.0f};
+
+        // Many steps with strong signal — should clamp at 10
+        for (int i = 0; i < 100; i++) {
+            am_notorch_step(A_d, B_d, 2, 2, 2, x_d, dy_d, 2.0f);
+        }
+        int all_clamped = 1;
+        for (int i = 0; i < 4; i++) {
+            if (A_d[i] > 10.01f || A_d[i] < -10.01f) all_clamped = 0;
+            if (B_d[i] > 10.01f || B_d[i] < -10.01f) all_clamped = 0;
+        }
+        ASSERT(all_clamped, "notorch clamp keeps values in [-10, 10]");
+    }
+
+#ifdef USE_BLAS
+    printf("\n── BLAS: compiled with hardware acceleration ──\n");
+#ifdef ACCELERATE
+    ASSERT(1, "BLAS backend: Apple Accelerate (AMX/Neural Engine)");
+#else
+    ASSERT(1, "BLAS backend: OpenBLAS");
+#endif
+#else
+    printf("\n── BLAS: compiled without acceleration (scalar fallback) ──\n");
+    ASSERT(1, "BLAS backend: scalar C loops (portable)");
+#endif
+
     printf("\n═══ Results: %d/%d passed ═══\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

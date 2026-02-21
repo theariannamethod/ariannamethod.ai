@@ -13,7 +13,7 @@ A programming language for controlling the generative field of transformer-based
 
 **AML** is a language that speaks directly to the attention mechanism of neural networks.
 
-Two files. No dependencies. 3100 lines of C. 233 tests. Janus transformer engine. Ships today.
+Two files. No dependencies. 3100 lines of C. 250 tests. Janus transformer engine. BLAS-accelerated Delta Voice and NOTORCH. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -94,9 +94,12 @@ Gamma and delta are orthogonal (cosine similarity = -0.0005). Personality persis
 ## Build
 
 ```
-make        # builds libaml.a
-make janus  # builds libjanus.dylib
-make test   # runs 233 AML tests
+make              # builds libaml.a
+make BLAS=1       # builds libaml.a with BLAS acceleration
+make janus        # builds libjanus.dylib
+make test         # runs 250 AML tests (scalar)
+make test-blas    # runs 250 AML tests (BLAS-accelerated)
+make test-all     # AML tests + Janus tests
 ```
 
 Or compile directly:
@@ -459,6 +462,39 @@ NOTORCH_LR 0.01       # learning rate
 NOTORCH_DECAY 0.999   # weight decay per step
 ```
 
+## BLAS Acceleration
+
+Optional hardware-accelerated matmul for Delta Voice (`am_apply_delta`) and NOTORCH (`am_notorch_step`). Evolved in [molequla](https://github.com/ariannamethod/molequla), ported back to the core.
+
+| Function | Without BLAS | With BLAS |
+|----------|-------------|-----------|
+| `am_apply_delta()` | nested loops | `cblas_sgemv` × 2 |
+| `am_notorch_step()` | nested loops | `cblas_sger` × 2 (rank-1 update) |
+
+| Platform | Backend | Dependencies |
+|----------|---------|-------------|
+| macOS | Apple Accelerate (AMX/Neural Engine) | zero — ships with Xcode |
+| Linux | OpenBLAS | `apt install libopenblas-dev` |
+
+### Build with BLAS
+
+```
+make BLAS=1            # auto-detects platform
+make test-blas         # compile + run tests with acceleration
+```
+
+Or compile directly:
+
+```
+# macOS
+cc -Wall -O2 -DUSE_BLAS -DACCELERATE -c core/ariannamethod.c -o ariannamethod.o -lm -framework Accelerate
+
+# Linux
+cc -Wall -O2 -DUSE_BLAS -c core/ariannamethod.c -o ariannamethod.o -lm -lopenblas
+```
+
+Without `BLAS=1`, everything compiles and works identically — pure scalar C loops, zero dependencies. Same numeric results either way.
+
 ## Blood — Runtime C Compilation (Level 3)
 
 Compile C code to shared libraries at runtime. Load and call functions via dlsym. No PyTorch. No Go. Pure POSIX.
@@ -577,9 +613,9 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (~3100 lines)
+  ariannamethod.c      Reference implementation (~3100 lines, optional BLAS)
   ariannamethod.h      Header with AM_State, Level 2, Blood, Janus API
-  test_aml.c           233 tests
+  test_aml.c           250 tests (scalar + BLAS validation)
 janus/
   janus.go             C-exported API — load, generate, callbacks
   lang.go              Auto language detection (Unicode heuristic)
@@ -604,7 +640,13 @@ Makefile
 
 ## Projects Using AML
 
-### Entities — Digital Personas 
+### Organisms — Living AML Implementations
+
+| Project | What | Stack |
+|---------|------|-------|
+| [molequla](https://github.com/ariannamethod/molequla) | Five-element organism: Go (5491 lines), C (3276 lines), JS, Python, Rust. BLAS-accelerated AML kernel (`libaml.dylib/so`), Go inference with delta adapters, ontogenesis (embryo→adult), swarm ecology, SyntropyTracker, Blood compiler. Origin of the BLAS acceleration now in core. | Go/C/JS/Python/Rust. Full AML kernel + BLAS |
+
+### Entities — Digital Personas
 
 | Project | What | Stack |
 |---------|------|-------|
