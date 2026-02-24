@@ -3104,3 +3104,308 @@ void am_step(float dt) {
     }
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HARMONIC NET — weightless neural network in C
+//
+// Layer 1: Fourier decomposition of entropy history
+// Layer 2: Correlation matrix (pairwise gamma cosines = the "weights")
+// Layer 3: Phase aggregation (resonance + harmonics → steering refinement)
+//
+// No trainable weights. No backprop. Just harmonic resonance.
+// Evolved in molequla, ported to core.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static struct {
+    /* Entropy history (circular buffer) */
+    float entropy_history[AM_HARMONIC_MAX_HISTORY];
+    int   history_len;
+    int   history_pos;
+
+    /* Organism gammas for this step */
+    float gammas[AM_HARMONIC_MAX_ORGANISMS][AM_HARMONIC_GAMMA_DIM];
+    float org_entropy[AM_HARMONIC_MAX_ORGANISMS];
+    int   n_organisms;
+} HN;
+
+void am_harmonic_init(void) {
+    memset(&HN, 0, sizeof(HN));
+}
+
+void am_harmonic_clear(void) {
+    HN.n_organisms = 0;
+}
+
+void am_harmonic_push_entropy(float entropy) {
+    HN.entropy_history[HN.history_pos] = entropy;
+    HN.history_pos = (HN.history_pos + 1) % AM_HARMONIC_MAX_HISTORY;
+    if (HN.history_len < AM_HARMONIC_MAX_HISTORY)
+        HN.history_len++;
+}
+
+void am_harmonic_push_gamma(int id, const float *gamma, int dim, float entropy) {
+    (void)id;
+    if (HN.n_organisms >= AM_HARMONIC_MAX_ORGANISMS) return;
+    int idx = HN.n_organisms++;
+    int copy_dim = dim < AM_HARMONIC_GAMMA_DIM ? dim : AM_HARMONIC_GAMMA_DIM;
+    memcpy(HN.gammas[idx], gamma, copy_dim * sizeof(float));
+    /* Zero-pad if needed */
+    for (int i = copy_dim; i < AM_HARMONIC_GAMMA_DIM; i++)
+        HN.gammas[idx][i] = 0.0f;
+    HN.org_entropy[idx] = entropy;
+}
+
+AM_HarmonicResult am_harmonic_forward(int step) {
+    (void)step;
+    AM_HarmonicResult r;
+    memset(&r, 0, sizeof(r));
+    r.n_organisms = HN.n_organisms;
+    r.strength_mod = 0.3f;
+
+    if (HN.n_organisms == 0) return r;
+
+    int T = HN.history_len;
+
+    /* ── Layer 1: Fourier decomposition of entropy history ── */
+    if (T >= 4) {
+        for (int k = 0; k < AM_HARMONIC_N_FREQ; k++) {
+            float sum = 0.0f;
+            for (int t = 0; t < T; t++) {
+                int idx = (HN.history_pos - T + t + AM_HARMONIC_MAX_HISTORY) % AM_HARMONIC_MAX_HISTORY;
+                float phase = 2.0f * 3.14159265f * (float)(k + 1) * (float)t / (float)T;
+                sum += HN.entropy_history[idx] * sinf(phase);
+            }
+            r.harmonics[k] = sum / (float)T;
+        }
+    }
+
+    /* ── Layer 2: Correlation matrix (pairwise gamma cosines) ── */
+    int n = HN.n_organisms;
+
+    /* Compute norms */
+    float norms[AM_HARMONIC_MAX_ORGANISMS];
+    for (int i = 0; i < n; i++) {
+        float s = 0.0f;
+        for (int d = 0; d < AM_HARMONIC_GAMMA_DIM; d++)
+            s += HN.gammas[i][d] * HN.gammas[i][d];
+        norms[i] = sqrtf(s);
+        if (norms[i] < 1e-8f) norms[i] = 1e-8f;
+    }
+
+    /* Pairwise cosines + phase resonance */
+    float mean_ent = 0.0f;
+    for (int i = 0; i < n; i++) mean_ent += HN.org_entropy[i];
+    mean_ent /= (float)n;
+
+    for (int i = 0; i < n; i++) {
+        float res = 0.0f;
+        float phase_i = HN.org_entropy[i] - mean_ent;
+        for (int j = 0; j < n; j++) {
+            if (i == j) continue;
+            /* Cosine similarity */
+            float dot = 0.0f;
+            for (int d = 0; d < AM_HARMONIC_GAMMA_DIM; d++)
+                dot += HN.gammas[i][d] * HN.gammas[j][d];
+            float cos_ij = dot / (norms[i] * norms[j]);
+
+            /* Phase similarity */
+            float phase_j = HN.org_entropy[j] - mean_ent;
+            float phase_sim = expf(-fabsf(phase_i - phase_j));
+
+            res += cos_ij * phase_sim;
+        }
+        if (n > 1) res /= (float)(n - 1);
+        r.resonance[i] = res;
+    }
+
+    /* ── Layer 3: Output ── */
+    /* Find dominant harmonic */
+    float max_amp = 0.0f;
+    r.dominant_freq = 0;
+    if (T >= 4) {
+        for (int k = 0; k < AM_HARMONIC_N_FREQ; k++) {
+            float a = fabsf(r.harmonics[k]);
+            if (a > max_amp) { max_amp = a; r.dominant_freq = k; }
+        }
+    }
+
+    /* Confidence: more data = more confident */
+    float conf_t = T < 16 ? (float)T / 16.0f : 1.0f;
+    float conf_n = n < 4 ? (float)n / 4.0f : 1.0f;
+    r.strength_mod = 0.3f + 0.7f * conf_t * conf_n;
+
+    return r;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// METHOD — distributed cognition operator (C implementation)
+//
+// The field operator. Works on collective organism data, not individuals.
+// Host pushes organism snapshots, METHOD computes awareness and steering.
+// Evolved in molequla, ported to core.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static AM_MethodState M;
+
+void am_method_init(void) {
+    memset(&M, 0, sizeof(AM_MethodState));
+}
+
+void am_method_clear(void) {
+    M.n_organisms = 0;
+}
+
+void am_method_push_organism(int id, float entropy, float syntropy,
+                             float gamma_mag, float gamma_cos) {
+    if (M.n_organisms >= AM_METHOD_MAX_ORGANISMS) return;
+    AM_MethodOrganism* o = &M.organisms[M.n_organisms++];
+    o->id = id;
+    o->entropy = entropy;
+    o->syntropy = syntropy;
+    o->gamma_mag = gamma_mag;
+    o->gamma_cos = gamma_cos;
+}
+
+float am_method_field_entropy(void) {
+    if (M.n_organisms == 0) return 0.0f;
+    float sum = 0.0f;
+    for (int i = 0; i < M.n_organisms; i++)
+        sum += M.organisms[i].entropy;
+    return sum / (float)M.n_organisms;
+}
+
+float am_method_field_syntropy(void) {
+    if (M.n_organisms == 0) return 0.0f;
+    float sum = 0.0f;
+    for (int i = 0; i < M.n_organisms; i++)
+        sum += M.organisms[i].syntropy;
+    return sum / (float)M.n_organisms;
+}
+
+float am_method_field_coherence(void) {
+    if (M.n_organisms == 0) return 1.0f;
+    if (M.n_organisms == 1) return 1.0f;
+
+    // Mean gamma_cos across organisms (host-computed pairwise)
+    float sum = 0.0f;
+    int count = 0;
+    for (int i = 0; i < M.n_organisms; i++) {
+        if (M.organisms[i].gamma_mag > 1e-6f) {
+            sum += M.organisms[i].gamma_cos;
+            count++;
+        }
+    }
+    return count > 0 ? sum / (float)count : 1.0f;
+}
+
+AM_MethodSteering am_method_step(float dt) {
+    AM_MethodSteering s;
+    memset(&s, 0, sizeof(s));
+
+    s.n_organisms = M.n_organisms;
+    M.step_count++;
+    s.step = M.step_count;
+
+    if (M.n_organisms == 0) {
+        s.action = AM_METHOD_WAIT;
+        return s;
+    }
+
+    float entropy = am_method_field_entropy();
+    float syntropy = am_method_field_syntropy();
+    float coherence = am_method_field_coherence();
+
+    s.entropy = entropy;
+    s.syntropy = syntropy;
+    s.coherence = coherence;
+
+    // Push to circular history buffer
+    int pos = M.history_pos % AM_METHOD_HISTORY_LEN;
+    M.entropy_history[pos] = entropy;
+    M.coherence_history[pos] = coherence;
+    M.history_pos++;
+    if (M.history_len < AM_METHOD_HISTORY_LEN)
+        M.history_len++;
+
+    // Compute entropy trend (positive = organizing, negative = dissolving)
+    float trend = 0.0f;
+    if (M.history_len >= 4) {
+        float recent = 0.0f, earlier = 0.0f;
+        int rc = 0, ec = 0;
+        for (int i = 0; i < M.history_len && i < 8; i++) {
+            int idx = ((M.history_pos - 1 - i) % AM_METHOD_HISTORY_LEN + AM_METHOD_HISTORY_LEN) % AM_METHOD_HISTORY_LEN;
+            if (i < 4) { recent += M.entropy_history[idx]; rc++; }
+            else        { earlier += M.entropy_history[idx]; ec++; }
+        }
+        if (rc > 0 && ec > 0)
+            trend = (earlier / (float)ec) - (recent / (float)rc);
+    }
+    s.trend = trend;
+
+    // Find best organism (lowest entropy)
+    int best_id = M.organisms[0].id;
+    float best_entropy = M.organisms[0].entropy;
+    for (int i = 1; i < M.n_organisms; i++) {
+        if (M.organisms[i].entropy < best_entropy) {
+            best_entropy = M.organisms[i].entropy;
+            best_id = M.organisms[i].id;
+        }
+    }
+    s.target_id = best_id;
+
+    // Decide action
+    if (coherence < 0.3f) {
+        s.action = AM_METHOD_REALIGN;
+        s.strength = 1.0f - coherence;
+    } else if (trend > 0.05f) {
+        s.action = AM_METHOD_AMPLIFY;
+        s.strength = fminf(1.0f, trend * 5.0f);
+    } else if (trend < -0.05f) {
+        s.action = AM_METHOD_DAMPEN;
+        s.strength = fminf(1.0f, fabsf(trend) * 5.0f);
+    } else if (entropy > 2.0f) {
+        s.action = AM_METHOD_GROUND;
+        s.strength = fminf(1.0f, (entropy - 1.5f) * 0.5f);
+    } else if (entropy < 0.5f) {
+        s.action = AM_METHOD_EXPLORE;
+        s.strength = fminf(1.0f, (1.0f - entropy) * 0.5f);
+    } else {
+        s.action = AM_METHOD_SUSTAIN;
+        s.strength = 0.1f;
+    }
+
+    // Advance AML field physics
+    am_step(dt);
+
+    // Translate steering to AML state
+    switch (s.action) {
+        case AM_METHOD_DAMPEN:
+            am_exec("PAIN 0.3");
+            am_exec("VELOCITY WALK");
+            break;
+        case AM_METHOD_AMPLIFY:
+            am_exec("VELOCITY RUN");
+            am_exec("DESTINY 0.6");
+            break;
+        case AM_METHOD_GROUND:
+            am_exec("ATTEND_FOCUS 0.9");
+            am_exec("VELOCITY NOMOVE");
+            break;
+        case AM_METHOD_EXPLORE:
+            am_exec("TUNNEL_CHANCE 0.3");
+            am_exec("VELOCITY RUN");
+            break;
+        case AM_METHOD_REALIGN:
+            am_exec("PAIN 0.5");
+            am_exec("ATTEND_FOCUS 0.8");
+            break;
+        default:
+            break;
+    }
+
+    return s;
+}
+
+AM_MethodState* am_method_get_state(void) {
+    return &M;
+}

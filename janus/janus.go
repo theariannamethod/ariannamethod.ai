@@ -155,6 +155,37 @@ func janus_set_alpha(alpha C.float) {
 	}
 }
 
+// ═══ GAMMA ESSENCE ═══
+
+//export janus_load_gamma
+func janus_load_gamma(path *C.char) C.int {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if engine == nil {
+		fmt.Println("[janus] error: no model loaded")
+		return -1
+	}
+
+	goPath := C.GoString(path)
+	if err := engine.LoadGammaEssence(goPath); err != nil {
+		fmt.Printf("[janus] gamma load failed: %v\n", err)
+		return -1
+	}
+
+	return 0
+}
+
+//export janus_unload_gamma
+func janus_unload_gamma() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if engine != nil {
+		engine.UnloadGamma()
+	}
+}
+
 // ═══ LOGIT CALLBACK ═══
 
 // makeLogitHook creates a Go function that calls the C callback

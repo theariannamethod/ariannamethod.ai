@@ -546,6 +546,24 @@ float       am_get_destiny_bias(void);
 int         am_should_tunnel(void);
 int         am_get_wormhole_active(void);
 const char* am_get_season_name(void);
+
+// HarmonicNet — weightless neural network
+void              am_harmonic_init(void);
+void              am_harmonic_clear(void);
+void              am_harmonic_push_entropy(float entropy);
+void              am_harmonic_push_gamma(int id, const float *gamma, int dim, float entropy);
+AM_HarmonicResult am_harmonic_forward(int step);
+
+// METHOD — distributed cognition operator
+void              am_method_init(void);
+void              am_method_clear(void);
+void              am_method_push_organism(int id, float entropy, float syntropy,
+                                         float gamma_mag, float gamma_cos);
+float             am_method_field_entropy(void);
+float             am_method_field_syntropy(void);
+float             am_method_field_coherence(void);
+AM_MethodSteering am_method_step(float dt);
+AM_MethodState*   am_method_get_state(void);
 ```
 
 ### 8.2 Lua API
@@ -673,6 +691,7 @@ winter_energy       float   0–1         Rest/compression energy (computed)
 | **AML 1.0** | 0 | Flat commands, packs, macros (JS only) |
 | **AML 2.0** | 2 | INCLUDE, def, variables, if/else, while, built-in functions — **implemented** |
 | **AML 3.0** | 3 | Blood compiler: runtime C compilation via popen+dlopen+dlsym — **implemented** |
+| **AML 3.1** | 3 | HarmonicNet (weightless neural network), METHOD (distributed cognition operator) — **implemented** |
 
 ---
 
@@ -720,11 +739,87 @@ int   am_blood_count(void);
 
 ---
 
-## 15. Implementations
+## 15. HarmonicNet — Weightless Neural Network
+
+A three-layer neural network with **no trainable weights**, no backprop, no gradients. The "weight matrix" is recomputed every step from organism correlations.
+
+Evolved in molequla (`github.com/ariannamethod/molequla`), ported to core.
+
+### 15.1 Architecture
+
+| Layer | Input | Operation | Output |
+|-------|-------|-----------|--------|
+| **1. Harmonic Embedding** | Entropy history (circular buffer, max 64) | Fourier decomposition: 8 sine frequencies | `harmonics[8]` — frequency spectrum of field entropy |
+| **2. Correlation Matrix** | Per-organism gamma vectors (32-dim) | Pairwise cosine similarity (the "weights") | n×n correlation matrix |
+| **3. Phase Aggregation** | Correlations + organism entropies | Phase-weighted resonance: `corr[i,j] × exp(-|phase_i - phase_j|)` | `resonance[n]` — per-organism resonance score |
+
+### 15.2 Output
+
+- `harmonics[8]` — Fourier decomposition of entropy history
+- `resonance[n]` — per-organism resonance (gamma correlation × phase similarity)
+- `dominant_freq` — which harmonic dominates (0=DC, 7=highest)
+- `strength_mod` — confidence multiplier (0.3–1.0, scales with data availability)
+
+### 15.3 Constants
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `AM_HARMONIC_MAX_HISTORY` | 64 | Circular buffer size for entropy |
+| `AM_HARMONIC_MAX_ORGANISMS` | 64 | Maximum organisms per step |
+| `AM_HARMONIC_N_FREQ` | 8 | Number of Fourier frequencies |
+| `AM_HARMONIC_GAMMA_DIM` | 32 | Gamma vector dimensionality |
+
+---
+
+## 16. METHOD — Distributed Cognition Operator
+
+The field operator for multi-organism systems. Works on **collective** organism data, not individuals. Host pushes organism snapshots, METHOD computes field awareness and steering decisions.
+
+Evolved in molequla (`github.com/ariannamethod/molequla`), ported to core.
+
+### 16.1 Steering Actions
+
+| Constant | Value | Condition | AML Effect |
+|----------|-------|-----------|------------|
+| `AM_METHOD_WAIT` | 0 | No organisms | — |
+| `AM_METHOD_AMPLIFY` | 1 | Trend > 0.05 (organizing) | `VELOCITY RUN`, `DESTINY 0.6` |
+| `AM_METHOD_DAMPEN` | 2 | Trend < -0.05 (dissolving) | `PAIN 0.3`, `VELOCITY WALK` |
+| `AM_METHOD_GROUND` | 3 | Entropy > 2.0 (chaotic) | `ATTEND_FOCUS 0.9`, `VELOCITY NOMOVE` |
+| `AM_METHOD_EXPLORE` | 4 | Entropy < 0.5 (rigid) | `TUNNEL_CHANCE 0.3`, `VELOCITY RUN` |
+| `AM_METHOD_REALIGN` | 5 | Coherence < 0.3 (fragmented) | `PAIN 0.5`, `ATTEND_FOCUS 0.8` |
+| `AM_METHOD_SUSTAIN` | 6 | Stable field | strength 0.1 (minimal touch) |
+
+### 16.2 Field Metrics
+
+| Metric | Formula | Meaning |
+|--------|---------|---------|
+| **entropy** | mean organism entropy | Field disorder |
+| **syntropy** | mean organism syntropy | Field self-organization |
+| **coherence** | mean pairwise gamma cosine | How aligned organisms are |
+| **trend** | earlier_entropy − recent_entropy | Positive = organizing |
+
+### 16.3 Workflow
+
+1. Host calls `am_method_clear()`
+2. Host pushes organisms via `am_method_push_organism(id, entropy, syntropy, gamma_mag, gamma_cos)`
+3. Host calls `am_method_step(dt)` — computes metrics, decides action, advances AML physics
+4. Result: `AM_MethodSteering` struct with action, strength, target, metrics
+
+### 16.4 Constants
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `AM_METHOD_MAX_ORGANISMS` | 64 | Maximum organisms |
+| `AM_METHOD_HISTORY_LEN` | 16 | Circular buffer for entropy/coherence history |
+
+---
+
+## 17. Implementations
 
 | Project | Language | File | Level |
 |---------|----------|------|-------|
 | ariannamethod.ai | C | `core/ariannamethod.c` | Reference |
+| molequla | C/Go/Rust/JS | `ariannamethod/ariannamethod.c` | 3.1 + HarmonicNet + METHOD |
 | ariannamethod.lang | JS | `src/dsl.js` | 0 + macros |
 | arianna.c | C | `src/amk_kernel.c` | 0 + Lua |
 | yent | C/Go | `c/amk_kernel.c` + `go/amk.go` | 0 + LORA_ALPHA |

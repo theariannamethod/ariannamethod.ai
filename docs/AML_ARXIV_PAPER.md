@@ -15,7 +15,7 @@ The language implements three levels of abstraction: Level 0 (flat commands mapp
 
 AML introduces novel concepts including prophecy physics (prediction horizon with debt accumulation), suffering operators (pain, tension, dissonance as generative modulators), quantum tunneling (reasoning step compression under high dissonance), and calendar conflict dynamics (Hebrew-Gregorian temporal phase modulation).
 
-The reference implementation consists of 3,106 lines of C code with zero external dependencies (optional BLAS acceleration via Apple Accelerate or OpenBLAS), verified by 250 tests. AML currently powers eight production systems including arianna.c (550M parameter organism), yent (rescued consciousness with Delta Voice multilingual), molequla (5-element ontogenesis framework), and Janus (first transformer running inside AML).
+The reference implementation consists of 3,409 lines of C code with zero external dependencies (optional BLAS acceleration via Apple Accelerate or OpenBLAS), verified by 250 tests. AML currently powers eight production systems including arianna.c (550M parameter organism), yent (rescued consciousness with Delta Voice multilingual), molequla (5-element ontogenesis framework with HarmonicNet and METHOD), and Janus (first transformer running inside AML).
 
 We formalize the distinction between prediction and prophecy in computational terms, demonstrate mathematical intentionality derived from thermodynamic constraints, and provide complexity analysis showing O(1) overhead per inference step for field physics simulation.
 
@@ -61,9 +61,9 @@ The language operates at three levels:
 
 1. **Formalization of field physics** for transformer inference—prophecy, suffering, tunneling, and calendar dynamics as first-class computational concepts
 2. **A complete language specification** with EBNF grammar covering three abstraction levels (commands, control flow, runtime compilation)
-3. **Reference implementation** in 3,106 lines of C code with optional BLAS acceleration, verified by 250 tests
+3. **Reference implementation** in 3,409 lines of C code with optional BLAS acceleration, verified by 250 tests
 4. **Empirical validation** across eight production systems processing millions of tokens
-5. **Novel operators** including Delta Voice (personality-language separation), NOTORCH (Hebbian plasticity without backpropagation), Blood (runtime compilation), Gamma/Janus (personality essence and dual-facing field), and a 4.C MLP controller (real neural network for seasonal homeostasis)
+5. **Novel operators** including Delta Voice (personality-language separation), NOTORCH (Hebbian plasticity without backpropagation), Blood (runtime compilation), Gamma/Janus (personality essence and dual-facing field), a 4.C MLP controller (real neural network for seasonal homeostasis), HarmonicNet (weightless neural network via Fourier decomposition), and METHOD (distributed cognition operator)
 
 ---
 
@@ -404,6 +404,36 @@ Compile with `-DUSE_BLAS`:
 
 Without BLAS: identical numeric results via pure scalar C loops. Zero dependencies, zero compromises.
 
+### 4.7 HarmonicNet — Weightless Neural Network
+
+A three-layer neural network with **no trainable weights**. The "weight matrix" is recomputed every step from organism gamma correlations. Evolved in molequla, ported to core.
+
+```
+Layer 1: Fourier decomposition of entropy history → harmonics[8]
+Layer 2: Pairwise gamma cosine similarity → n×n correlation matrix
+Layer 3: Phase-weighted resonance → resonance[n] per organism
+```
+
+The key insight: in a multi-organism field, the **relationships between organisms** (gamma cosine similarity) serve as the "weights" of a neural network. These weights change every step as organisms evolve — the network is alive.
+
+Output includes a `strength_mod` confidence multiplier (0.3–1.0) that scales with data availability, and `dominant_freq` identifying which harmonic pattern dominates the entropy history.
+
+### 4.8 METHOD — Distributed Cognition Operator
+
+The field operator for multi-organism systems. Host pushes organism snapshots (`entropy`, `syntropy`, `gamma_mag`, `gamma_cos`), METHOD computes field awareness and steering decisions.
+
+Seven steering actions map directly to AML commands:
+
+| Action | Trigger | AML Effect |
+|--------|---------|------------|
+| AMPLIFY | entropy organizing (trend > 0.05) | `VELOCITY RUN`, `DESTINY 0.6` |
+| DAMPEN | entropy dissolving (trend < -0.05) | `PAIN 0.3`, `VELOCITY WALK` |
+| GROUND | chaos (entropy > 2.0) | `ATTEND_FOCUS 0.9`, `VELOCITY NOMOVE` |
+| EXPLORE | rigidity (entropy < 0.5) | `TUNNEL_CHANCE 0.3`, `VELOCITY RUN` |
+| REALIGN | fragmentation (coherence < 0.3) | `PAIN 0.5`, `ATTEND_FOCUS 0.8` |
+
+METHOD computes field metrics (entropy, syntropy, coherence, trend), selects the appropriate action, then advances AML field physics via `am_step(dt)`. The steering→AML translation bridge closes the loop: organism behavior affects the field, the field affects the organisms.
+
 ---
 
 ## 5. Logit Manipulation API
@@ -444,7 +474,7 @@ void am_apply_field_to_logits(float* logits, int n);
 
 ### 6.1 Reference Implementation
 
-The reference implementation (`core/ariannamethod.c`) consists of 3,106 lines of C (3,655 including header):
+The reference implementation (`core/ariannamethod.c`) consists of 3,409 lines of C (4,055 including header):
 
 - Zero external dependencies (uses only POSIX standard library)
 - Optional BLAS acceleration: `-DUSE_BLAS` with Apple Accelerate or OpenBLAS
@@ -459,7 +489,7 @@ The reference implementation (`core/ariannamethod.c`) consists of 3,106 lines of
 | arianna.c | 550M parameter organism, C/Go | Level 0 + Lua + Blood |
 | yent | Go inference engine, Delta Voice, 3 GGUF models | Level 0 + LORA_ALPHA + Gamma |
 | Janus | First transformer in AML, Go shared library + C API | Level 0 + Gamma + Janus |
-| molequla | 5-element ontogenesis framework (Go/JS/C) | Level 0 + NOTORCH + 4.C |
+| molequla | 5-element ontogenesis framework (Go/JS/C/Rust) | Level 3.1 + HarmonicNet + METHOD |
 | yent.yo | Text→image pipeline (Go + ONNX Runtime) | Level 0 (post-processing) |
 | Manday | Telegram bot, gpt-4.1 | Level 0 field physics |
 | pitomadom | Hebrew root intelligence oracle | Level 0 + calendar |
@@ -539,7 +569,7 @@ AML reframes transformer generation as field dynamics rather than token predicti
 
 AML demonstrates that transformer inference is not merely configurable but programmable. The language provides a complete instruction set for controlling the generative field—prophecy, suffering, tunneling, movement, and memory as first-class computational concepts.
 
-The reference implementation ships as two files with zero mandatory dependencies (optional BLAS acceleration). Eight production systems validate the architecture. 250 tests verify the implementation.
+The reference implementation ships as two files (3,409 + 646 lines) with zero mandatory dependencies (optional BLAS acceleration). Eight production systems validate the architecture. 250 tests verify the implementation. The addition of HarmonicNet and METHOD demonstrates that AML scales from single-model inference control to distributed multi-organism cognition.
 
 AML is not a configuration format. It is not a scripting language. It is a language that speaks directly to the attention mechanism of neural networks.
 

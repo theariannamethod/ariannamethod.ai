@@ -62,6 +62,13 @@ int main(int argc, char** argv) {
         printf("delta load = %d %s\n", rc, rc == 0 ? "OK" : "FAIL");
     }
 
+    // Load gamma if provided
+    if (argc >= 4) {
+        printf("\n--- Loading gamma: %s ---\n", argv[3]);
+        rc = janus_load_gamma(argv[3]);
+        printf("gamma load = %d %s\n", rc, rc == 0 ? "OK" : "FAIL");
+    }
+
     // Register logit callback
     janus_set_logit_callback(test_logit_callback);
 
