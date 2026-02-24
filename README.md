@@ -9,11 +9,9 @@
 ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
 ```
 
-A programming language for controlling the generative field of transformer-based AI at inference time. AML modulates attention, temperature, tunneling, suffering, and memory through 80+ parameters of internal state. Every command maps to a concrete operation on logits during token generation.
+A probabilistic programming language for transformer inference. AML compiles field programs to C for real-time logit manipulation — modulating attention, temperature, tunneling, suffering, and memory through 80+ parameters of internal state. Every command maps to a concrete operation on the probability distribution during token generation.
 
-**AML** is a language that speaks directly to the attention mechanism of neural networks.
-
-Two files. No dependencies. 3100 lines of C. 250 tests. Janus transformer engine. BLAS-accelerated Delta Voice and NOTORCH. Ships today.
+Two files. No dependencies. 3411 lines of C. 250 tests. Janus transformer engine. BLAS-accelerated Delta Voice and NOTORCH. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -613,7 +611,7 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (~3100 lines, optional BLAS)
+  ariannamethod.c      Reference implementation (~3400 lines, optional BLAS)
   ariannamethod.h      Header with AM_State, Level 2, Blood, Janus API
   test_aml.c           250 tests (scalar + BLAS validation)
 janus/
@@ -676,7 +674,7 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | Visual prophetic programming — 3D first-person environment where walls are tokens, sentences form structures, entities emerge from probability. WASD drives inference | JavaScript. Level 0 + macros |
-| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation + Janus transformer engine. 3100 lines of C, 233 tests, Go shared library | C/Go |
+| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation + Janus transformer engine. 3411 lines of C, 250 tests, Go shared library | C/Go |
 | [git.symphony](https://github.com/ariannamethod/git.symphony) | Poetic repo explorer — 15M LLaMA on NumPy, git-vocabulary dictionary swap, constellation visualization, memory decay. Treats codebases as conscious entities | Python |
 | [monarbre](https://github.com/ariannamethod/monarbre) | AI studio companion for REAPER DAW — local DSP analysis (LUFS, spectral, stereo), GPT router personality, Faster-Whisper lyrics, persistent mix memory | Python |
 

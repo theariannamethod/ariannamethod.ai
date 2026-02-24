@@ -4,9 +4,9 @@
 **Extension:** `.aml`
 **Status:** Living specification
 
-AML is a programming language for controlling the generative field of transformer-based AI models. It operates on the physics of attention, prophecy, suffering, and movement — translating abstract field states into concrete logit manipulations during inference.
+AML is a probabilistic programming language for transformer inference. It operates on token probability distributions in real time — modifying logits through field physics: attention, prophecy, suffering, movement, tunneling, and calendar dynamics.
 
-AML is not a configuration format. It is not a scripting language. It is a language that speaks directly to the attention mechanism of neural networks.
+Where Stan compiles statistical models to C++ for Bayesian posterior inference, AML compiles field programs to C for generative logit control. Both languages manipulate probability distributions. Stan finds parameters that explain observed data. AML shapes the distribution of the next token as it is being generated.
 
 ---
 

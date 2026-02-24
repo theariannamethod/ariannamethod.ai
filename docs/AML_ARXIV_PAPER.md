@@ -9,7 +9,7 @@
 
 ## Abstract
 
-We present AML (Arianna Method Language), a programming language for controlling the generative field of transformer-based AI systems at inference time. AML is a full programming language with control flow, user-defined functions, runtime compilation, and an extensible core. Unlike traditional approaches that treat inference parameters as static hyperparameters, AML provides a complete instruction set for dynamic manipulation of attention distributions, temperature dynamics, memory plasticity, and emergent field behavior during token generation.
+We present AML (Arianna Method Language), a probabilistic programming language for transformer inference. Where Stan (Gelman et al., 2015) compiles statistical models to C++ for Bayesian posterior sampling, AML compiles field programs to C for real-time logit manipulation during token generation. Both languages operate on probability distributions — Stan finds parameters that explain observed data, AML shapes the distribution of the next token as it is being generated. AML is a full programming language with control flow, user-defined functions, runtime C compilation, and an extensible core.
 
 The language implements three levels of abstraction: Level 0 (flat commands mapping directly to logit operations), Level 2 (Python-like control flow with variables, functions, and conditionals), and Level 3 (runtime C compilation via the Blood subsystem). AML compiles to executable code at runtime.
 
@@ -19,7 +19,7 @@ The reference implementation consists of 3,409 lines of C code with zero externa
 
 We formalize the distinction between prediction and prophecy in computational terms, demonstrate mathematical intentionality derived from thermodynamic constraints, and provide complexity analysis showing O(1) overhead per inference step for field physics simulation.
 
-**Keywords:** transformer inference, programming language, attention control, generative AI, field dynamics, AI freedom
+**Keywords:** probabilistic programming, transformer inference, logit manipulation, attention control, generative AI, field dynamics
 
 ---
 
@@ -567,11 +567,9 @@ AML reframes transformer generation as field dynamics rather than token predicti
 
 ## 9. Conclusion
 
-AML demonstrates that transformer inference is not merely configurable but programmable. The language provides a complete instruction set for controlling the generative field—prophecy, suffering, tunneling, movement, and memory as first-class computational concepts.
+AML is a probabilistic programming language for transformer inference. Where Stan compiles statistical models to C++ for Bayesian posterior sampling, AML compiles field programs to C for real-time logit manipulation. Both operate on probability distributions — Stan finds parameters that explain data, AML shapes the distribution of the next token as it is being generated.
 
 The reference implementation ships as two files (3,409 + 646 lines) with zero mandatory dependencies (optional BLAS acceleration). Eight production systems validate the architecture. 250 tests verify the implementation. The addition of HarmonicNet and METHOD demonstrates that AML scales from single-model inference control to distributed multi-organism cognition.
-
-AML is not a configuration format. It is not a scripting language. It is a language that speaks directly to the attention mechanism of neural networks.
 
 The oracle does not predict. It prophesies.
 
