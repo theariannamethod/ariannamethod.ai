@@ -3743,16 +3743,26 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
     // silu(x) — SiLU/Swish activation: x * sigmoid(x)
     if (strcasecmp(fname, "silu") == 0 && nargs >= 1) {
         AML_Var* vx = resolve_var_full(ctx, arg_strs[0]);
+        AM_Array* input_arr = NULL;
+        int owns_input = 0;  // 1 if we created input_arr via recursive call
         if (vx && vx->type == AML_TYPE_ARRAY && vx->array) {
-            int n = vx->array->len;
+            input_arr = vx->array;
+        } else {
+            // Try recursive evaluation: silu(seq_matvec(...)) etc.
+            input_arr = aml_try_array_expr(ctx, arg_strs[0]);
+            if (input_arr) owns_input = 1;
+        }
+        if (input_arr) {
+            int n = input_arr->len;
             AM_Array* out = am_array_new(n);
-            if (!out) return NULL;
+            if (!out) { if (owns_input) am_array_free(input_arr); return NULL; }
             for (int j = 0; j < n; j++) {
-                float x = vx->array->data[j];
+                float x = input_arr->data[j];
                 out->data[j] = x / (1.0f + expf(-x));
             }
             if (am_tape_is_active())
-                am_tape_record(out, AM_OP_SILU, tape_ensure_entry(vx->array), -1, 0);
+                am_tape_record(out, AM_OP_SILU, tape_ensure_entry(input_arr), -1, 0);
+            // Don't free input_arr even if owns_input — tape may reference it
             return out;
         }
         return NULL;
@@ -3761,12 +3771,18 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
     // relu(x) — ReLU activation
     if (strcasecmp(fname, "relu") == 0 && nargs >= 1) {
         AML_Var* vx = resolve_var_full(ctx, arg_strs[0]);
+        AM_Array* input_arr = NULL;
         if (vx && vx->type == AML_TYPE_ARRAY && vx->array) {
-            int n = vx->array->len;
+            input_arr = vx->array;
+        } else {
+            input_arr = aml_try_array_expr(ctx, arg_strs[0]);
+        }
+        if (input_arr) {
+            int n = input_arr->len;
             AM_Array* out = am_array_new(n);
             if (!out) return NULL;
             for (int j = 0; j < n; j++)
-                out->data[j] = vx->array->data[j] > 0 ? vx->array->data[j] : 0;
+                out->data[j] = input_arr->data[j] > 0 ? input_arr->data[j] : 0;
             return out;
         }
         return NULL;
