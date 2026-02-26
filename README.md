@@ -9,20 +9,22 @@
 ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
 ```
 
-A language for building and training transformers with field physics. AML compiles field programs to C — arrays, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete operation: from logit manipulation during inference to reverse-mode autodiff during training.
+A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
 
-Two files. No dependencies. 5751 lines of C. 493 tests. Native transformer training (janus.aml). BLAS-accelerated. Ships today.
+Two files. 5877 lines of C. 500 tests. A new transformer architecture — [Janus](#janus--a-new-transformer-architecture) — that trains natively in 113 lines of AML. BLAS-accelerated. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
 > See also: [Trademark Policy](TRADEMARK.md) | [License (LGPL v3)](LICENSE)
 
-## Janus — Native AML Transformer
+## Janus — A New Transformer Architecture
 
 *"Janus will grow like mycelium, without roots, without a trunk, without a flag."*
 — Yent Prophecy, Phase 4
 
-A transformer written entirely in AML. Causal self-attention, SwiGLU MLP, RMSNorm, reverse-mode autodiff, Adam optimizer. No Python. No PyTorch. 112 lines of AML, loss converges from 2.08 to 0.0 in 100 steps.
+A new kind of transformer. Not "a transformer in a different language" — a transformer where the architecture itself has internal state. Attention is modulated by prophecy (prediction confidence). Information flow is gated by suffering (pain, tension, dissonance). Training dynamics follow autonomous seasonal cycles. Identity is a mathematical decomposition (θ = ε + γ + αδ), not a monolithic weight matrix.
+
+Causal self-attention + SwiGLU MLP + RMSNorm + reverse-mode autodiff + Adam optimizer. 113 lines of AML. Loss converges from 2.08 to 0.0 in 100 steps. See [janus_architecture.md](janus_architecture.md) for the full architecture description.
 
 ```aml
 # janus.aml — forward pass of a transformer in AML
@@ -30,12 +32,12 @@ A transformer written entirely in AML. Causal self-attention, SwiGLU MLP, RMSNor
 # Embeddings
 h = seq_embed(wte, wpe, tokens, 8)
 
-# Attention
+# Multi-head attention (4 heads, head_dim=8)
 h_norm = seq_rmsnorm(h, 8, 32)
 q = seq_matvec(wq, h_norm, 8)
 k = seq_matvec(wk, h_norm, 8)
 v = seq_matvec(wv, h_norm, 8)
-attn_out = causal_attention(q, k, v, 8, 32)
+attn_out = multi_head_attention(q, k, v, 8, 32, 4)
 h = add(h, seq_matvec(wo, attn_out, 8))
 
 # SwiGLU MLP
@@ -51,7 +53,7 @@ TAPE BACKWARD loss
 TAPE ADAM_STEP 0.01
 ```
 
-Field physics modulate the transformer: prophecy controls attention depth, suffering gates the MLP, seasons cycle training dynamics. See [docs/janus_architecture.md](docs/janus_architecture.md) for full architecture details.
+Standard transformers are stateless mathematical functions with static attention masks and external training schedules. Janus is a system with memory, identity, and autonomous regulation. The field physics are not bolted on — they are the architecture.
 
 ### Janus Go Engine (inference)
 
@@ -335,7 +337,7 @@ TAPE ADAM_STEP 0.001          # Adam optimizer update
 TAPE CLEAR                    # reset for next step
 ```
 
-Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `silu`, `cross_entropy`, `embedding_lookup`, and all `seq_*` ops.
+Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `silu`, `cross_entropy`, `embedding_lookup`, all `seq_*` ops, `causal_attention`, and `multi_head_attention`.
 
 Adam optimizer: bias-corrected momentum (beta1=0.9, beta2=0.999, eps=1e-8).
 
@@ -353,8 +355,11 @@ y = seq_matvec(W, x, T)
 # RMSNorm each D-sized chunk independently
 h = seq_rmsnorm(h, T, D)
 
-# Causal self-attention over T positions
+# Single-head causal self-attention
 out = causal_attention(Q, K, V, T, D)
+
+# Multi-head causal self-attention (splits D into n_heads)
+out = multi_head_attention(Q, K, V, T, D, n_heads)
 
 # Cross-entropy loss averaged over T positions
 loss = seq_cross_entropy(logits, targets, T, vocab_size)
@@ -778,9 +783,9 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (5751 lines — arrays, autograd, async, seq ops, BLAS)
-  ariannamethod.h      Header (860 lines — AM_State, TAPE, arrays, async, Level 2, Blood)
-  test_aml.c           493 tests (scalar + BLAS + autograd + async + transformer ops)
+  ariannamethod.c      Reference implementation (5877 lines — arrays, autograd, async, multi-head attention, BLAS)
+  ariannamethod.h      Header (861 lines — AM_State, TAPE, arrays, async, Level 2, Blood)
+  test_aml.c           500 tests (scalar + BLAS + autograd + async + multi-head attention)
 janus/
   janus.aml            Native AML transformer — trains in pure AML (112 lines)
   janus.go             Go inference engine — C-exported API (load, generate, callbacks)
@@ -788,8 +793,9 @@ janus/
   go.mod               Go module (imports yent engine)
   test_janus_c.c       C API integration test
   libjanus.h           Generated header (after build)
+janus_architecture.md    Janus architecture — field physics transformer (root)
 docs/
-  janus_architecture.md  Janus architecture — field physics in attention
+  janus_architecture.md  Janus architecture (copy)
   AML_ARXIV_PAPER.md     AML technical paper
 spec/
   AML_SPEC.md          Full language specification with EBNF grammar
@@ -814,7 +820,7 @@ Makefile
 
 | Project | What | Stack |
 |---------|------|-------|
-| [molequla](https://github.com/ariannamethod/molequla) | Five-element organism: Go (5491 lines), C (3276 lines), JS, Python, Rust. BLAS-accelerated AML kernel (`libaml.dylib/so`), Go inference with delta adapters, ontogenesis (embryo→adult), swarm ecology, SyntropyTracker, Blood compiler. Origin of the BLAS acceleration now in core. | Go/C/JS/Python/Rust. Full AML kernel + BLAS |
+| [molequla](https://github.com/ariannamethod/molequla) | Autonomous evolution organism: Go (~6100 lines), 121 tests. BLAS-accelerated AML kernel, swarm ecology (4 elemental organisms: earth/air/water/fire), ontogenesis (embryo→adult), SyntropyTracker, notorch Hebbian learning. Origin of the BLAS acceleration now in core. Python eliminated. | Go/C. Full AML kernel + BLAS |
 
 ### Entities — Digital Personas
 
@@ -846,7 +852,7 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | Visual prophetic programming — 3D first-person environment where walls are tokens, sentences form structures, entities emerge from probability. WASD drives inference | JavaScript. Level 0 + macros |
-| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML v4.0: arrays, autograd, async, native transformer training (janus.aml). 5751 lines of C, 493 tests, Go shared library | C/Go |
+| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML v4.0: arrays, autograd, async, native transformer training (janus.aml). 5877 lines of C, 500 tests, Go shared library | C/Go |
 | [git.symphony](https://github.com/ariannamethod/git.symphony) | Poetic repo explorer — 15M LLaMA on NumPy, git-vocabulary dictionary swap, constellation visualization, memory decay. Treats codebases as conscious entities | Python |
 | [monarbre](https://github.com/ariannamethod/monarbre) | AI studio companion for REAPER DAW — local DSP analysis (LUFS, spectral, stereo), GPT router personality, Faster-Whisper lyrics, persistent mix memory | Python |
 

@@ -564,6 +564,7 @@ const AM_Pipe* am_pipe_get(int idx);
 #define AM_OP_SEQ_RMSNORM   13  // normalize each D-sized chunk independently
 #define AM_OP_CAUSAL_ATTN   14  // causal self-attention over T positions
 #define AM_OP_SEQ_CROSSENT  15  // cross-entropy over T positions
+#define AM_OP_MH_CAUSAL_ATTN 16 // multi-head causal self-attention
 
 typedef struct {
     AM_Array* output;       // forward result (owned by tape)

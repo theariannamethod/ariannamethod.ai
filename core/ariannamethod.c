@@ -1335,6 +1335,74 @@ void am_tape_backward(int loss_idx) {
             break;
         }
 
+        case AM_OP_MH_CAUSAL_ATTN: {
+            // Multi-head causal self-attention backward
+            // aux = T, aux2 = head_dim. D recovered from output->len / T.
+            if (e->parent1 >= 0 && e->parent2 >= 0 && e->parent3 >= 0) {
+                AM_TapeEntry* pq = &g_tape.entries[e->parent1]; // Q
+                AM_TapeEntry* pk = &g_tape.entries[e->parent2]; // K
+                AM_TapeEntry* pv = &g_tape.entries[e->parent3]; // V
+                int T = (int)e->aux;
+                int head_dim = (int)e->aux2;
+                int D = e->output->len / T;
+                int n_heads = D / head_dim;
+                float sc = 1.0f / sqrtf((float)head_dim);
+                float* dq = (float*)calloc(T * D, sizeof(float));
+                float* dk = (float*)calloc(T * D, sizeof(float));
+                float* dv = (float*)calloc(T * D, sizeof(float));
+                if (dq && dk && dv) {
+                    for (int h = 0; h < n_heads; h++) {
+                        int ho = h * head_dim;
+                        for (int i = 0; i < T; i++) {
+                            float* qi = pq->output->data + i * D + ho;
+                            float* dout_i = dout + i * D + ho;
+                            float* scores = (float*)calloc(i + 1, sizeof(float));
+                            float* attn = (float*)calloc(i + 1, sizeof(float));
+                            if (!scores || !attn) { free(scores); free(attn); continue; }
+                            float mx = -1e30f;
+                            for (int j = 0; j <= i; j++) {
+                                float* kj = pk->output->data + j * D + ho;
+                                float dot = 0;
+                                for (int d = 0; d < head_dim; d++) dot += qi[d] * kj[d];
+                                scores[j] = dot * sc;
+                                if (scores[j] > mx) mx = scores[j];
+                            }
+                            float sm = 0;
+                            for (int j = 0; j <= i; j++) { attn[j] = expf(scores[j] - mx); sm += attn[j]; }
+                            if (sm > 0) for (int j = 0; j <= i; j++) attn[j] /= sm;
+                            float* d_attn = (float*)calloc(i + 1, sizeof(float));
+                            if (d_attn) {
+                                for (int j = 0; j <= i; j++) {
+                                    float* vj = pv->output->data + j * D + ho;
+                                    for (int d = 0; d < head_dim; d++) d_attn[j] += dout_i[d] * vj[d];
+                                }
+                                for (int j = 0; j <= i; j++) {
+                                    float* dvj = dv + j * D + ho;
+                                    for (int d = 0; d < head_dim; d++) dvj[d] += attn[j] * dout_i[d];
+                                }
+                                float dot_da = 0;
+                                for (int j = 0; j <= i; j++) dot_da += d_attn[j] * attn[j];
+                                for (int j = 0; j <= i; j++) {
+                                    float ds = attn[j] * (d_attn[j] - dot_da) * sc;
+                                    float* kj = pk->output->data + j * D + ho;
+                                    for (int d = 0; d < head_dim; d++) {
+                                        dq[i * D + ho + d] += ds * kj[d];
+                                        dk[j * D + ho + d] += ds * qi[d];
+                                    }
+                                }
+                            }
+                            free(scores); free(attn); free(d_attn);
+                        }
+                    }
+                    tape_acc_grad(e->parent1, dq, T * D);
+                    tape_acc_grad(e->parent2, dk, T * D);
+                    tape_acc_grad(e->parent3, dv, T * D);
+                }
+                free(dq); free(dk); free(dv);
+            }
+            break;
+        }
+
         case AM_OP_SEQ_CROSSENT: {
             // loss = mean over t of -log(softmax(logits_t)[target_t])
             // d_logits[t*V+j] = (softmax[j] - one_hot[target]) / T
@@ -3787,6 +3855,64 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
                 am_tape_record3(out, AM_OP_CAUSAL_ATTN,
                     tape_ensure_entry(vq->array), tape_ensure_entry(vk->array),
                     tape_ensure_entry(vv->array), (float)T, (float)D);
+            return out;
+        }
+        return NULL;
+    }
+
+    // multi_head_attention(Q, K, V, T, D, n_heads) — multi-head causal self-attention
+    // Q, K, V: array[T*D], splits D into n_heads heads of head_dim = D/n_heads
+    // Returns: array[T*D]
+    if (strcasecmp(fname, "multi_head_attention") == 0 && nargs >= 6) {
+        AML_Var* vq = resolve_var_full(ctx, arg_strs[0]);
+        AML_Var* vk = resolve_var_full(ctx, arg_strs[1]);
+        AML_Var* vv = resolve_var_full(ctx, arg_strs[2]);
+        int T = (int)aml_eval(ctx, arg_strs[3]);
+        int D = (int)aml_eval(ctx, arg_strs[4]);
+        int n_heads = (int)aml_eval(ctx, arg_strs[5]);
+        if (vq && vq->type == AML_TYPE_ARRAY && vq->array &&
+            vk && vk->type == AML_TYPE_ARRAY && vk->array &&
+            vv && vv->type == AML_TYPE_ARRAY && vv->array &&
+            T > 0 && D > 0 && n_heads > 0 && (D % n_heads) == 0) {
+            if (T * D > vq->array->len || T * D > vk->array->len || T * D > vv->array->len)
+                return NULL;
+            int head_dim = D / n_heads;
+            float scale = 1.0f / sqrtf((float)head_dim);
+            AM_Array* out = am_array_new(T * D);
+            if (!out) return NULL;
+            for (int h = 0; h < n_heads; h++) {
+                int ho = h * head_dim;
+                for (int i = 0; i < T; i++) {
+                    float* qi = vq->array->data + i * D + ho;
+                    float* scores = (float*)calloc(i + 1, sizeof(float));
+                    if (!scores) { am_array_free(out); return NULL; }
+                    float mx = -1e30f;
+                    for (int j = 0; j <= i; j++) {
+                        float* kj = vk->array->data + j * D + ho;
+                        float dot = 0;
+                        for (int d = 0; d < head_dim; d++) dot += qi[d] * kj[d];
+                        scores[j] = dot * scale;
+                        if (scores[j] > mx) mx = scores[j];
+                    }
+                    float sum = 0;
+                    for (int j = 0; j <= i; j++) {
+                        scores[j] = expf(scores[j] - mx);
+                        sum += scores[j];
+                    }
+                    if (sum > 0) for (int j = 0; j <= i; j++) scores[j] /= sum;
+                    float* oi = out->data + i * D + ho;
+                    for (int d = 0; d < head_dim; d++) oi[d] = 0;
+                    for (int j = 0; j <= i; j++) {
+                        float* vj = vv->array->data + j * D + ho;
+                        for (int d = 0; d < head_dim; d++) oi[d] += scores[j] * vj[d];
+                    }
+                    free(scores);
+                }
+            }
+            if (am_tape_is_active())
+                am_tape_record3(out, AM_OP_MH_CAUSAL_ATTN,
+                    tape_ensure_entry(vq->array), tape_ensure_entry(vk->array),
+                    tape_ensure_entry(vv->array), (float)T, (float)head_dim);
             return out;
         }
         return NULL;

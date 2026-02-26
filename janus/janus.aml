@@ -9,6 +9,7 @@
 
 # ── Model hyperparameters ──
 n_embd = 32
+n_heads = 4
 n_layer = 1
 vocab_size = 16
 seq_len = 8
@@ -68,8 +69,8 @@ while step < 50:
     k = seq_matvec(wk, h_norm, 8)
     v = seq_matvec(wv, h_norm, 8)
 
-    # Causal self-attention
-    attn_out = causal_attention(q, k, v, 8, 32)
+    # Multi-head causal self-attention (4 heads, head_dim=8)
+    attn_out = multi_head_attention(q, k, v, 8, 32, 4)
 
     # Output projection + residual
     attn_proj = seq_matvec(wo, attn_out, 8)

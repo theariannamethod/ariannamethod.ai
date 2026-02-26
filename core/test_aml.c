@@ -3296,6 +3296,160 @@ int main(void) {
         // log(4) ≈ 1.386, loss should be close to that
     }
 
+    // ── MULTI-HEAD ATTENTION ─────────────────────────────────────────────
+
+    printf("\n── Phase 5: multi_head_attention basic forward ──\n");
+    {
+        am_init();
+        int rc = am_exec(
+            "q = randn(32, 0.1)\n"
+            "k = randn(32, 0.1)\n"
+            "v = randn(32, 0.1)\n"
+            "out = multi_head_attention(q, k, v, 4, 8, 2)\n"
+            "n = len(out)\n"
+        );
+        ASSERT(rc == 0, "multi_head_attention forward runs");
+    }
+
+    printf("\n── Phase 5: multi_head_attention matches single-head when n_heads=1 ──\n");
+    {
+        am_init();
+        int rc = am_exec(
+            "q = [1.0, 0.5, 0.2, 0.8, 0.3, 0.7, 0.1, 0.9]\n"
+            "k = [0.5, 1.0, 0.3, 0.7, 0.8, 0.2, 0.9, 0.1]\n"
+            "v = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]\n"
+            "out_sh = causal_attention(q, k, v, 2, 4)\n"
+            "out_mh = multi_head_attention(q, k, v, 2, 4, 1)\n"
+            "d = add(out_sh, scale(out_mh, -1.0))\n"
+            "diff = dot(d, d)\n"
+        );
+        ASSERT(rc == 0, "single-head vs multi-head n_heads=1 runs");
+    }
+
+    printf("\n── Phase 5: multi_head_attention causality check ──\n");
+    {
+        am_init();
+        // T=2, D=4, n_heads=2, head_dim=2. Position 0 attends only to itself.
+        int rc = am_exec(
+            "q = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "k = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]\n"
+            "v = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]\n"
+            "out = multi_head_attention(q, k, v, 2, 4, 2)\n"
+        );
+        ASSERT(rc == 0, "multi_head causality check runs");
+    }
+
+    printf("\n── Phase 5: multi_head_attention with TAPE backward ──\n");
+    {
+        am_init();
+        int rc = am_exec(
+            "q = randn(32, 0.1)\n"
+            "k = randn(32, 0.1)\n"
+            "v = randn(32, 0.1)\n"
+            "target = [0.0, 1.0, 2.0, 3.0]\n"
+            "TAPE START\n"
+            "TAPE PARAM q\n"
+            "TAPE PARAM k\n"
+            "TAPE PARAM v\n"
+            "out = multi_head_attention(q, k, v, 4, 8, 4)\n"
+            "loss = seq_cross_entropy(out, target, 4, 8)\n"
+            "TAPE BACKWARD loss\n"
+        );
+        ASSERT(rc == 0, "multi_head_attention backward runs");
+        // Check that parameters got gradients
+        AM_Tape* tape = am_tape_get();
+        int has_grads = 0;
+        for (int i = 0; i < tape->count; i++)
+            if (tape->entries[i].is_param && tape->entries[i].grad) has_grads++;
+        ASSERT(has_grads == 3, "Q, K, V all have gradients after multi_head backward");
+    }
+
+    printf("\n── Phase 5: multi-head janus training convergence ──\n");
+    {
+        am_init();
+        int rc = am_exec(
+            "wte = matrix(8, 16, 0.08)\n"
+            "wpe = matrix(4, 16, 0.08)\n"
+            "wq = matrix(16, 16, 0.08)\n"
+            "wk = matrix(16, 16, 0.08)\n"
+            "wv = matrix(16, 16, 0.08)\n"
+            "wo = matrix(16, 16, 0.08)\n"
+            "w1 = matrix(16, 16, 0.08)\n"
+            "w3 = matrix(16, 16, 0.08)\n"
+            "w2 = matrix(16, 16, 0.08)\n"
+            "lm_head = matrix(8, 16, 0.08)\n"
+            "tokens = [0.0, 1.0, 2.0, 3.0]\n"
+            "targets = [1.0, 2.0, 3.0, 4.0]\n"
+            "step = 0\n"
+            "TAPE START\n"
+            "TAPE PARAM wte\n"
+            "TAPE PARAM wpe\n"
+            "TAPE PARAM wq\n"
+            "TAPE PARAM wk\n"
+            "TAPE PARAM wv\n"
+            "TAPE PARAM wo\n"
+            "TAPE PARAM w1\n"
+            "TAPE PARAM w3\n"
+            "TAPE PARAM w2\n"
+            "TAPE PARAM lm_head\n"
+            "while step < 30:\n"
+            "    h = seq_embed(wte, wpe, tokens, 4)\n"
+            "    h_norm = seq_rmsnorm(h, 4, 16)\n"
+            "    q = seq_matvec(wq, h_norm, 4)\n"
+            "    k = seq_matvec(wk, h_norm, 4)\n"
+            "    v = seq_matvec(wv, h_norm, 4)\n"
+            "    attn_out = multi_head_attention(q, k, v, 4, 16, 4)\n"
+            "    attn_proj = seq_matvec(wo, attn_out, 4)\n"
+            "    h = add(h, attn_proj)\n"
+            "    h_norm = seq_rmsnorm(h, 4, 16)\n"
+            "    gate = silu(seq_matvec(w1, h_norm, 4))\n"
+            "    up = seq_matvec(w3, h_norm, 4)\n"
+            "    mlp_out = mul(gate, up)\n"
+            "    mlp_proj = seq_matvec(w2, mlp_out, 4)\n"
+            "    h = add(h, mlp_proj)\n"
+            "    h_norm = seq_rmsnorm(h, 4, 16)\n"
+            "    logits = seq_matvec(lm_head, h_norm, 4)\n"
+            "    loss = seq_cross_entropy(logits, targets, 4, 8)\n"
+            "    TAPE BACKWARD loss\n"
+            "    TAPE ADAM_STEP 0.01\n"
+            "    TAPE CLEAR\n"
+            "    TAPE START\n"
+            "    TAPE PARAM wte\n"
+            "    TAPE PARAM wpe\n"
+            "    TAPE PARAM wq\n"
+            "    TAPE PARAM wk\n"
+            "    TAPE PARAM wv\n"
+            "    TAPE PARAM wo\n"
+            "    TAPE PARAM w1\n"
+            "    TAPE PARAM w3\n"
+            "    TAPE PARAM w2\n"
+            "    TAPE PARAM lm_head\n"
+            "    step = step + 1\n"
+        );
+        ASSERT(rc == 0, "multi-head janus training completes");
+        // Run one more forward to check loss
+        rc = am_exec(
+            "h = seq_embed(wte, wpe, tokens, 4)\n"
+            "h_norm = seq_rmsnorm(h, 4, 16)\n"
+            "q = seq_matvec(wq, h_norm, 4)\n"
+            "k = seq_matvec(wk, h_norm, 4)\n"
+            "v = seq_matvec(wv, h_norm, 4)\n"
+            "attn_out = multi_head_attention(q, k, v, 4, 16, 4)\n"
+            "attn_proj = seq_matvec(wo, attn_out, 4)\n"
+            "h = add(h, attn_proj)\n"
+            "h_norm = seq_rmsnorm(h, 4, 16)\n"
+            "gate = silu(seq_matvec(w1, h_norm, 4))\n"
+            "up = seq_matvec(w3, h_norm, 4)\n"
+            "mlp_out = mul(gate, up)\n"
+            "mlp_proj = seq_matvec(w2, mlp_out, 4)\n"
+            "h = add(h, mlp_proj)\n"
+            "h_norm = seq_rmsnorm(h, 4, 16)\n"
+            "logits = seq_matvec(lm_head, h_norm, 4)\n"
+            "loss = seq_cross_entropy(logits, targets, 4, 8)\n"
+        );
+        ASSERT(rc == 0, "multi-head post-training forward succeeds");
+    }
+
     // ── LILITH I/O ──────────────────────────────────────────────────────
 #ifndef AM_IO_DISABLED
     printf("\n── Lilith I/O: PIPE CREATE + OPEN + WRITE + READ ──\n");
