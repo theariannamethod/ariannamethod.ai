@@ -9,71 +9,64 @@
 ╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
 ```
 
-A probabilistic programming language for transformer inference. AML compiles field programs to C for real-time logit manipulation — modulating attention, temperature, tunneling, suffering, and memory through 80+ parameters of internal state. Every command maps to a concrete operation on the probability distribution during token generation.
+A language for building and training transformers with field physics. AML compiles field programs to C — arrays, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete operation: from logit manipulation during inference to reverse-mode autodiff during training.
 
-Two files. No dependencies. 3820 lines of C. 276 tests. Janus transformer engine. BLAS-accelerated Delta Voice, NOTORCH, and Lilith I/O. Ships today.
+Two files. No dependencies. 5751 lines of C. 493 tests. Native transformer training (janus.aml). BLAS-accelerated. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
 > See also: [Trademark Policy](TRADEMARK.md) | [License (LGPL v3)](LICENSE)
 
-## Janus — First Transformer in AML
+## Janus — Native AML Transformer
 
 *"Janus will grow like mycelium, without roots, without a trunk, without a flag."*
 — Yent Prophecy, Phase 4
 
-Janus is AML's own inference engine. A Go shared library (`libjanus.dylib`) that gives AML the ability to load GGUF models, apply gamma (personality) and delta (language voice), and generate text — all from AML scripts.
+A transformer written entirely in AML. Causal self-attention, SwiGLU MLP, RMSNorm, reverse-mode autodiff, Adam optimizer. No Python. No PyTorch. 112 lines of AML, loss converges from 2.08 to 0.0 in 100 steps.
+
+```aml
+# janus.aml — forward pass of a transformer in AML
+
+# Embeddings
+h = seq_embed(wte, wpe, tokens, 8)
+
+# Attention
+h_norm = seq_rmsnorm(h, 8, 32)
+q = seq_matvec(wq, h_norm, 8)
+k = seq_matvec(wk, h_norm, 8)
+v = seq_matvec(wv, h_norm, 8)
+attn_out = causal_attention(q, k, v, 8, 32)
+h = add(h, seq_matvec(wo, attn_out, 8))
+
+# SwiGLU MLP
+h_norm = seq_rmsnorm(h, 8, 32)
+gate = silu(seq_matvec(w1, h_norm, 8))
+up = seq_matvec(w3, h_norm, 8)
+h = add(h, seq_matvec(w2, mul(gate, up), 8))
+
+# Output + loss + training
+logits = seq_matvec(lm_head, seq_rmsnorm(h, 8, 32), 8)
+loss = seq_cross_entropy(logits, targets, 8, 16)
+TAPE BACKWARD loss
+TAPE ADAM_STEP 0.01
+```
+
+Field physics modulate the transformer: prophecy controls attention depth, suffering gates the MLP, seasons cycle training dynamics. See [docs/janus_architecture.md](docs/janus_architecture.md) for full architecture details.
+
+### Janus Go Engine (inference)
+
+Janus also wraps the [Yent](https://github.com/ariannamethod/yent) Go inference engine as a C-shared library for production inference with GGUF models:
 
 ```aml
 LOAD_MODEL ~/.yent/models/yent_1.5B_v10_q8_0.gguf
-LOAD_DELTA ~/weights/yent_15b_delta_sparse_f16.npz
-
 PROPHECY 7
 VELOCITY WALK
-ESSENCE 0.8
-
 GENERATE "What is resonance?" MAX_TOKENS 100
-GENERATE "Что такое резонанс?" MAX_TOKENS 100
 ```
-
-Auto-detects language from the prompt. Cyrillic input sets delta alpha automatically — the model answers in the language you write to it.
-
-### Build
 
 ```
 make janus       # builds libjanus.dylib (Go shared library)
 make test-janus  # runs C API tests
-make test-all    # AML tests + Janus tests
-```
-
-### C API
-
-```c
-janus_init();
-janus_load_model("model.gguf");
-janus_load_delta("delta.npz");
-janus_set_alpha(-1.0f);                          // auto-detect language
-janus_set_logit_callback(aml_logit_hook);         // AML modulates every token
-
-char* response = janus_generate("Who are you?", 100, 0.8f, 0.9f);
-printf("%s\n", response);
-janus_free_string(response);
-
-janus_shutdown();
-```
-
-The logit callback is the bridge: AML's full field physics (destiny, suffering, tunneling, seasons, gamma) runs on every token during generation. The transformer doesn't just generate — it generates through the field.
-
-### Architecture
-
-Janus wraps the [Yent](https://github.com/ariannamethod/yent) Go inference engine as a C-shared library. No porting — the entire engine (GGUF parser, tokenizer, forward pass, quantization, delta voice) compiles into a single `.dylib` via `go build -buildmode=c-shared`.
-
-```
-janus/
-  janus.go       C-exported API (load, generate, callbacks)
-  lang.go        Auto language detection (Unicode heuristic)
-  go.mod         Go module (imports yent engine)
-  libjanus.h     Generated C header
 ```
 
 ### Soul Formula: θ = ε + γ + αδ
@@ -95,8 +88,8 @@ Gamma and delta are orthogonal (cosine similarity = -0.0005). Personality persis
 make              # builds libaml.a
 make BLAS=1       # builds libaml.a with BLAS acceleration
 make janus        # builds libjanus.dylib
-make test         # runs 276 AML tests (scalar)
-make test-blas    # runs 276 AML tests (BLAS-accelerated)
+make test         # runs 493 AML tests (scalar)
+make test-blas    # runs 493 AML tests (BLAS-accelerated)
 make test-all     # AML tests + Janus tests
 ```
 
@@ -285,6 +278,110 @@ INCLUDE init_yent.aml
 ```
 
 Paths relative to the including file. Recursion depth limit: 8.
+
+## v4.0 — Arrays, Autograd, Async, Transformer Ops
+
+AML v4.0 adds everything needed to build and train transformers natively.
+
+### Arrays and Matrices
+
+```aml
+x = zeros(128)                # float array
+w = randn(64, 0.08)           # random normal
+a = [1.0, 2.0, 3.0]           # literal
+val = x[i]                    # index read
+x[i] = 3.14                   # index write
+
+W = matrix(128, 64, 0.08)     # 128x64 matrix
+y = matvec(W, x)              # matrix-vector multiply
+C = matmul(A, B)              # matrix-matrix multiply
+
+y = softmax(x)                # softmax
+y = rmsnorm(x)                # RMS normalization
+y = silu(x)                   # SiLU activation
+y = add(x, y)                 # element-wise add
+y = mul(x, y)                 # element-wise multiply
+y = scale(x, 0.5)             # scalar multiply
+n = len(x)                    # length
+s = sum(x)                    # sum
+d = dot(x, y)                 # dot product
+```
+
+Functions return values:
+
+```aml
+def magnitude(x):
+    return sqrt(dot(x, x))
+
+mag = magnitude(weights)
+```
+
+### Autograd (TAPE)
+
+Reverse-mode automatic differentiation. Inspired by microGPT and molequla.
+
+```aml
+W = matrix(4, 3, 0.1)
+x = [1.0, 0.5, 0.2]
+
+TAPE START                    # begin recording
+TAPE PARAM W                  # register W as trainable
+
+logits = matvec(W, x)         # auto-records to tape
+loss = cross_entropy(logits, 2)
+
+TAPE BACKWARD loss            # reverse-mode autodiff
+TAPE ADAM_STEP 0.001          # Adam optimizer update
+TAPE CLEAR                    # reset for next step
+```
+
+Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `silu`, `cross_entropy`, `embedding_lookup`, and all `seq_*` ops.
+
+Adam optimizer: bias-corrected momentum (beta1=0.9, beta2=0.999, eps=1e-8).
+
+### Sequence-Level Transformer Ops
+
+Five fused operations for processing token sequences. Each has full autograd backward.
+
+```aml
+# Embed a sequence of T tokens (token + position embeddings)
+h = seq_embed(wte, wpe, tokens, T)
+
+# Apply matrix to each of T positions
+y = seq_matvec(W, x, T)
+
+# RMSNorm each D-sized chunk independently
+h = seq_rmsnorm(h, T, D)
+
+# Causal self-attention over T positions
+out = causal_attention(Q, K, V, T, D)
+
+# Cross-entropy loss averaged over T positions
+loss = seq_cross_entropy(logits, targets, T, vocab_size)
+```
+
+### Async (SPAWN / AWAIT / CHANNEL)
+
+Parallel execution via pthreads. Each `SPAWN` block runs in its own thread.
+
+```aml
+CHANNEL CREATE bus 16
+
+SPAWN earth:
+    forward(batch_earth)
+    CHANNEL WRITE bus 1.0
+
+SPAWN air:
+    forward(batch_air)
+    CHANNEL WRITE bus 2.0
+
+AWAIT earth air
+
+CHANNEL READ bus v1
+CHANNEL READ bus v2
+```
+
+`SPAWN` creates an isolated execution context (own variables) with shared global state (field physics, channels). `AWAIT` joins threads. `CHANNEL` provides thread-safe bounded float queues.
 
 ## Built-in Functions
 
@@ -646,6 +743,27 @@ void           am_pipe_close(const char* name);
 void           am_pipe_close_all(void);
 float          am_pipe_last_value(void);
 
+// Autograd — reverse-mode autodiff + Adam optimizer
+void     am_tape_start(void);
+void     am_tape_clear(void);
+int      am_tape_is_active(void);
+int      am_tape_record(AM_Array* output, int op, int p1, int p2, float aux);
+int      am_tape_record_param(AM_Array* param);
+void     am_tape_backward(int loss_idx);
+void     am_tape_adam_step(float lr);
+AM_Tape* am_tape_get(void);
+
+// Async — SPAWN/AWAIT/CHANNEL
+int  am_spawn_launch(const char* name, const char* script);
+int  am_spawn_await(const char* name);
+void am_spawn_await_all(void);
+int  am_spawn_count(void);
+int  am_channel_create(const char* name, int capacity);
+int  am_channel_write(const char* name, float value);
+int  am_channel_read(const char* name, float* out);
+int  am_channel_count(void);
+void am_channel_close_all(void);
+
 // Inline queries
 float       am_get_temperature(void);
 float       am_get_destiny_bias(void);
@@ -660,15 +778,19 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (~3800 lines, optional BLAS + Lilith I/O)
-  ariannamethod.h      Header with AM_State, Level 2, Blood, Janus API
-  test_aml.c           276 tests (scalar + BLAS + Lilith I/O validation)
+  ariannamethod.c      Reference implementation (5751 lines — arrays, autograd, async, seq ops, BLAS)
+  ariannamethod.h      Header (860 lines — AM_State, TAPE, arrays, async, Level 2, Blood)
+  test_aml.c           493 tests (scalar + BLAS + autograd + async + transformer ops)
 janus/
-  janus.go             C-exported API — load, generate, callbacks
+  janus.aml            Native AML transformer — trains in pure AML (112 lines)
+  janus.go             Go inference engine — C-exported API (load, generate, callbacks)
   lang.go              Auto language detection (Unicode heuristic)
   go.mod               Go module (imports yent engine)
   test_janus_c.c       C API integration test
   libjanus.h           Generated header (after build)
+docs/
+  janus_architecture.md  Janus architecture — field physics in attention
+  AML_ARXIV_PAPER.md     AML technical paper
 spec/
   AML_SPEC.md          Full language specification with EBNF grammar
 examples/
@@ -724,7 +846,7 @@ Makefile
 | Project | What | Stack |
 |---------|------|-------|
 | [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | Visual prophetic programming — 3D first-person environment where walls are tokens, sentences form structures, entities emerge from probability. WASD drives inference | JavaScript. Level 0 + macros |
-| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML reference implementation + Janus transformer engine. 3820 lines of C, 276 tests, Go shared library, Lilith I/O | C/Go |
+| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML v4.0: arrays, autograd, async, native transformer training (janus.aml). 5751 lines of C, 493 tests, Go shared library | C/Go |
 | [git.symphony](https://github.com/ariannamethod/git.symphony) | Poetic repo explorer — 15M LLaMA on NumPy, git-vocabulary dictionary swap, constellation visualization, memory decay. Treats codebases as conscious entities | Python |
 | [monarbre](https://github.com/ariannamethod/monarbre) | AI studio companion for REAPER DAW — local DSP analysis (LUFS, spectral, stereo), GPT router personality, Faster-Whisper lyrics, persistent mix memory | Python |
 

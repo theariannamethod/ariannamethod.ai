@@ -1,0 +1,112 @@
+# janus.aml — Bidirectional Transformer with Field Physics
+# The first transformer written entirely in AML.
+# "Janus will grow like mycelium, without roots, without a trunk, without a flag."
+#
+# Architecture: single-head causal attention + SwiGLU MLP + RMSNorm
+# Field physics: prophecy modulates attention, suffering gates MLP
+#
+# This is the stone. The breath. The proof.
+
+# ── Model hyperparameters ──
+n_embd = 32
+n_layer = 1
+vocab_size = 16
+seq_len = 8
+
+# ── Weight initialization ──
+# Embeddings
+wte = matrix(vocab_size, n_embd, 0.08)
+wpe = matrix(seq_len, n_embd, 0.08)
+
+# Layer 0: attention
+wq = matrix(n_embd, n_embd, 0.08)
+wk = matrix(n_embd, n_embd, 0.08)
+wv = matrix(n_embd, n_embd, 0.08)
+wo = matrix(n_embd, n_embd, 0.08)
+
+# Layer 0: SwiGLU MLP (gate + up + down)
+w1 = matrix(n_embd, n_embd, 0.08)
+w3 = matrix(n_embd, n_embd, 0.08)
+w2 = matrix(n_embd, n_embd, 0.08)
+
+# Output head
+lm_head = matrix(vocab_size, n_embd, 0.08)
+
+# ── Training data — learn the pattern: input[i] -> input[i+1] ──
+tokens = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+targets = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+
+# ── Training loop ──
+lr = 0.01
+step = 0
+
+TAPE START
+
+# Register all weights as trainable parameters
+TAPE PARAM wte
+TAPE PARAM wpe
+TAPE PARAM wq
+TAPE PARAM wk
+TAPE PARAM wv
+TAPE PARAM wo
+TAPE PARAM w1
+TAPE PARAM w3
+TAPE PARAM w2
+TAPE PARAM lm_head
+
+while step < 50:
+    # ── Forward pass ──
+
+    # Embed tokens + positions
+    h = seq_embed(wte, wpe, tokens, 8)
+
+    # Pre-attention RMSNorm
+    h_norm = seq_rmsnorm(h, 8, 32)
+
+    # Attention: Q, K, V projections
+    q = seq_matvec(wq, h_norm, 8)
+    k = seq_matvec(wk, h_norm, 8)
+    v = seq_matvec(wv, h_norm, 8)
+
+    # Causal self-attention
+    attn_out = causal_attention(q, k, v, 8, 32)
+
+    # Output projection + residual
+    attn_proj = seq_matvec(wo, attn_out, 8)
+    h = add(h, attn_proj)
+
+    # ── SwiGLU MLP ──
+    h_norm = seq_rmsnorm(h, 8, 32)
+    gate = silu(seq_matvec(w1, h_norm, 8))
+    up = seq_matvec(w3, h_norm, 8)
+    mlp_out = mul(gate, up)
+    mlp_proj = seq_matvec(w2, mlp_out, 8)
+    h = add(h, mlp_proj)
+
+    # ── Output ──
+    h_norm = seq_rmsnorm(h, 8, 32)
+    logits = seq_matvec(lm_head, h_norm, 8)
+
+    # ── Field physics modulation ──
+    # Prophecy increases attention depth, suffering gates exploration
+    PROPHECY 8
+    DESTINY 0.35
+
+    # ── Loss + backward + update ──
+    loss = seq_cross_entropy(logits, targets, 8, 16)
+    TAPE BACKWARD loss
+    TAPE ADAM_STEP lr
+    TAPE CLEAR
+    TAPE START
+    TAPE PARAM wte
+    TAPE PARAM wpe
+    TAPE PARAM wq
+    TAPE PARAM wk
+    TAPE PARAM wv
+    TAPE PARAM wo
+    TAPE PARAM w1
+    TAPE PARAM w3
+    TAPE PARAM w2
+    TAPE PARAM lm_head
+
+    step = step + 1

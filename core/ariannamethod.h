@@ -243,6 +243,25 @@ typedef struct {
 #define AML_MAX_CALL_DEPTH  16
 #define AML_MAX_INCLUDE     8
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// AML v4.0 — ARRAYS (Phase 1)
+// Float arrays as first-class values. Heap-allocated, freed on scope exit.
+// Max 1M floats (4MB) per array.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#define AML_TYPE_FLOAT  0
+#define AML_TYPE_ARRAY  1
+#define AM_MAX_ARRAY_SIZE  1048576  // 1M floats = 4MB
+
+typedef struct {
+    float* data;
+    int    len;
+    int    refcount;  // simple refcounting for shared arrays
+    // v4.0 Phase 2: matrix shape (0,0 = 1D array; rows>0, cols>0 = 2D matrix)
+    int    rows;
+    int    cols;
+} AM_Array;
+
 // Preprocessed line
 typedef struct {
     char text[AML_MAX_LINE_LEN];
@@ -250,10 +269,12 @@ typedef struct {
     int  lineno;
 } AML_Line;
 
-// Variable
+// Variable — supports float or array
 typedef struct {
-    char  name[AML_MAX_NAME];
-    float value;
+    char      name[AML_MAX_NAME];
+    int       type;     // AML_TYPE_FLOAT or AML_TYPE_ARRAY
+    float     value;    // used when type == FLOAT
+    AM_Array* array;    // used when type == ARRAY (heap allocated)
 } AML_Var;
 
 // Symbol table
@@ -289,6 +310,11 @@ typedef struct {
     int          include_depth;
     char         base_dir[256];
     char         error[256];
+    // v4.0: return values
+    int          has_return;        // 1 if function returned a value
+    float        return_value;      // scalar return value
+    AM_Array*    return_array;      // array return value (NULL if scalar)
+    int          return_type;       // AML_TYPE_FLOAT or AML_TYPE_ARRAY
 } AML_ExecCtx;
 
 // AM_State field map entry (for reading state in expressions)
@@ -510,6 +536,134 @@ int am_pipe_count(void);
 const AM_Pipe* am_pipe_get(int idx);
 
 #endif // AM_IO_DISABLED
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTOGRAD TAPE (v4.0 Phase 3)
+// Reverse-mode automatic differentiation. Inspired by microGPT's Value class
+// and molequla's Vec/Scalar autograd.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#define AM_TAPE_MAX_ENTRIES  8192
+#define AM_TAPE_MAX_PARAMS   512
+
+// Tape operation types
+#define AM_OP_NONE       0
+#define AM_OP_MATVEC     1   // y = W @ x
+#define AM_OP_ADD        2   // y = a + b
+#define AM_OP_MUL        3   // y = a * b (element-wise)
+#define AM_OP_SCALE      4   // y = a * scalar
+#define AM_OP_SOFTMAX    5   // y = softmax(x)
+#define AM_OP_RMSNORM    6   // y = rmsnorm(x)
+#define AM_OP_SILU       7   // y = silu(x)
+#define AM_OP_CROSS_ENT  8   // loss = cross_entropy(logits, target)
+#define AM_OP_EMB_LOOKUP 9   // y = row(wte, token_id)
+#define AM_OP_MATMUL    10   // C = A @ B
+// Phase 5: sequence-level transformer ops
+#define AM_OP_SEQ_EMBED     11  // h = embed(wte, wpe, tokens, T)
+#define AM_OP_SEQ_MATVEC    12  // Y = W @ X for each of T positions
+#define AM_OP_SEQ_RMSNORM   13  // normalize each D-sized chunk independently
+#define AM_OP_CAUSAL_ATTN   14  // causal self-attention over T positions
+#define AM_OP_SEQ_CROSSENT  15  // cross-entropy over T positions
+
+typedef struct {
+    AM_Array* output;       // forward result (owned by tape)
+    AM_Array* grad;         // gradient (same shape as output, allocated on backward)
+    int       op;           // AM_OP_* type
+    int       parent1;      // index into tape (-1 = none)
+    int       parent2;      // index into tape (-1 = none)
+    int       parent3;      // index into tape (-1 = none, used by causal_attention for V)
+    float     aux;          // auxiliary scalar (target index for CE, scale for SCALE, T for seq ops)
+    float     aux2;         // second auxiliary (D for seq ops, V for seq_cross_entropy)
+    int       is_param;     // 1 = this is a trainable parameter (not freed on CLEAR)
+} AM_TapeEntry;
+
+// Adam optimizer state per parameter
+typedef struct {
+    AM_Array* m;            // first moment (mean of gradients)
+    AM_Array* v;            // second moment (mean of squared gradients)
+    int       t;            // timestep counter
+} AM_AdamState;
+
+typedef struct {
+    AM_TapeEntry entries[AM_TAPE_MAX_ENTRIES];
+    int          count;
+    int          active;    // 1 = recording, 0 = not recording
+
+    // Parameter registry for Adam
+    AM_AdamState adam[AM_TAPE_MAX_PARAMS];
+    int          n_params;
+} AM_Tape;
+
+// Tape API
+void am_tape_start(void);
+void am_tape_clear(void);
+int  am_tape_is_active(void);
+int  am_tape_record(AM_Array* output, int op, int p1, int p2, float aux);
+int  am_tape_record3(AM_Array* output, int op, int p1, int p2, int p3, float aux, float aux2);
+int  am_tape_record_param(AM_Array* param);
+void am_tape_backward(int loss_idx);
+void am_tape_adam_step(float lr);
+AM_Tape* am_tape_get(void);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASYNC (v4.0 Phase 4) — SPAWN/AWAIT/CHANNEL
+// pthreads-based parallel execution. Each SPAWN gets its own AML_ExecCtx
+// with a snapshot of globals. Channels provide thread-safe communication.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#ifndef AM_ASYNC_DISABLED
+
+#define AM_MAX_SPAWNS      16
+#define AM_MAX_CHANNELS    16
+#define AM_CHANNEL_BUF     64
+#define AM_SPAWN_NAME_LEN  32
+
+// Spawn slot — tracks one spawned thread
+typedef struct {
+    char  name[AM_SPAWN_NAME_LEN];
+    int   active;      // 1 = thread running, 0 = finished or unused
+    int   joined;      // 1 = already joined
+    int   result;      // execution result (0 = ok)
+} AM_SpawnSlot;
+
+// Channel — thread-safe bounded float queue
+typedef struct {
+    float data[AM_CHANNEL_BUF];
+    int   head;
+    int   tail;
+    int   count;
+    int   capacity;
+    int   active;
+    char  name[AM_SPAWN_NAME_LEN];
+} AM_ChannelSlot;
+
+// Spawn API
+int  am_spawn_launch(const char* name, const char* script);
+int  am_spawn_await(const char* name);
+void am_spawn_await_all(void);
+int  am_spawn_count(void);
+
+// Channel API
+int  am_channel_create(const char* name, int capacity);
+int  am_channel_write(const char* name, float value);
+int  am_channel_read(const char* name, float* out);
+int  am_channel_count(void);
+void am_channel_close_all(void);
+
+#endif // AM_ASYNC_DISABLED
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ARRAY API (v4.0)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Allocate a new array of given length, initialized to zero. Returns NULL on failure.
+AM_Array* am_array_new(int len);
+
+// Free an array (decrements refcount, frees when 0).
+void am_array_free(AM_Array* arr);
+
+// Increment refcount (for shared references).
+AM_Array* am_array_ref(AM_Array* arr);
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONVENIENCE QUERIES
