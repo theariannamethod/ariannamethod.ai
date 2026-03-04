@@ -82,6 +82,10 @@
   #endif
 #endif
 
+#ifdef USE_CUDA
+  #include "ariannamethod_cuda.h"
+#endif
+
 // See ariannamethod.h for struct definitions and pack flags
 
 static AM_State G;
@@ -1402,6 +1406,30 @@ void am_tape_backward(int loss_idx) {
                 if (dw && dx) {
                     float* Wd = pw->output->data;
                     float* Xd = px->output->data;
+#ifdef USE_CUDA
+                    // GPU backward: dX(T,in) = dout(T,out) × W(out,in)
+                    //               dW(out,in) = dout^T(out,T) × X(T,in)
+                    {
+                        float* d_W = gpu_alloc(out_d * in_d);
+                        float* d_dout = gpu_alloc(T * out_d);
+                        float* d_X = gpu_alloc(T * in_d);
+                        float* d_dW = gpu_alloc(out_d * in_d);
+                        float* d_dX = gpu_alloc(T * in_d);
+                        if (d_W && d_dout && d_X && d_dW && d_dX) {
+                            gpu_upload(d_W, Wd, out_d * in_d);
+                            gpu_upload(d_dout, dout, T * out_d);
+                            gpu_upload(d_X, Xd, T * in_d);
+                            // dX = dout × W
+                            gpu_sgemm_nn(T, in_d, out_d, d_dout, d_W, d_dX);
+                            gpu_download(dx, d_dX, T * in_d);
+                            // dW = dout^T × X
+                            gpu_sgemm_tn(out_d, in_d, T, d_dout, d_X, d_dW);
+                            gpu_download(dw, d_dW, out_d * in_d);
+                        }
+                        gpu_free(d_W); gpu_free(d_dout); gpu_free(d_X);
+                        gpu_free(d_dW); gpu_free(d_dX);
+                    }
+#else
                     // dX: each position t independent → parallelize over t
                     #ifdef _OPENMP
                     #pragma omp parallel for schedule(static) if(T > 16)
@@ -1421,6 +1449,7 @@ void am_tape_backward(int loss_idx) {
                             for (int j = 0; j < in_d; j++)
                                 dw[i * in_d + j] += dout_t[i] * x_t[j];
                     }
+#endif // USE_CUDA backward
                     tape_acc_grad(e->parent1, dw, pw->output->len);
                     tape_acc_grad(e->parent2, dx, px->output->len);
                 }
@@ -4164,7 +4193,21 @@ static AM_Array* aml_try_array_expr(AML_ExecCtx* ctx, const char* rhs) {
             float* W = vw->array->data;
             float* X = vx->array->data;
             float* Y = out->data;
-#ifdef USE_BLAS
+#ifdef USE_CUDA
+            // GPU: upload X,W → cuBLAS sgemm → download Y
+            {
+                float* d_W = gpu_alloc(out_dim * in_dim);
+                float* d_X = gpu_alloc(T * in_dim);
+                float* d_Y = gpu_alloc(T * out_dim);
+                if (d_W && d_X && d_Y) {
+                    gpu_upload(d_W, W, out_dim * in_dim);
+                    gpu_upload(d_X, X, T * in_dim);
+                    gpu_sgemm_nt(T, out_dim, in_dim, d_X, d_W, d_Y);
+                    gpu_download(Y, d_Y, T * out_dim);
+                }
+                gpu_free(d_W); gpu_free(d_X); gpu_free(d_Y);
+            }
+#elif defined(USE_BLAS)
             // BLAS batch: Y(T,out) = X(T,in) * W^T(in,out)
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         T, out_dim, in_dim,

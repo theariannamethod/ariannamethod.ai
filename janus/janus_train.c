@@ -26,8 +26,12 @@
 #include <math.h>
 #include <time.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 #include "core/ariannamethod.h"
 #include "janus/janus_tokenizer.h"
+#ifdef USE_CUDA
+#include "core/ariannamethod_cuda.h"
+#endif
 
 static FILE* g_logfile = NULL;
 static void trainlog(const char* fmt, ...);
@@ -58,6 +62,160 @@ typedef struct {
 } TrainConfig;
 
 // ═══════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// Auto-download training data from HuggingFace (FineWeb-Edu)
+// Zero Python. Zero pip. Just curl + C.
+// ═══════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+// Auto-download training data from HuggingFace (FineWeb-Edu)
+// Zero Python. Zero pip. Just curl + C.
+// Paginated: fetches in chunks to avoid timeouts.
+// ═══════════════════════════════════════════════════════════════════
+
+#define DL_HF_DATASET "HuggingFaceFW/fineweb-edu"
+#define DL_HF_CONFIG  "sample-10BT"
+#define DL_HF_SPLIT   "train"
+#define DL_CHUNK_SIZE  100    // rows per request
+#define DL_TOTAL_ROWS  5000  // total rows to fetch
+#define DL_MIN_SIZE    100000 // 100KB minimum
+
+// Extract "text":"..." fields from HuggingFace JSON response
+static long hf_extract_texts(const char* json, long json_len, FILE* out) {
+    long total = 0;
+    const char* p = json;
+    const char* end = json + json_len;
+    
+    while (p < end - 8) {
+        if (p[0] == '"' && p[1] == 't' && p[2] == 'e' && p[3] == 'x' && 
+            p[4] == 't' && p[5] == '"' && p[6] == ':' && p[7] == '"') {
+            p += 8;
+            const char* start = p;
+            while (p < end) {
+                if (*p == '\\') { p += 2; continue; }
+                if (*p == '"') break;
+                p++;
+            }
+            const char* s = start;
+            while (s < p) {
+                if (*s == '\\' && s + 1 < p) {
+                    s++;
+                    switch (*s) {
+                        case 'n':  fputc('\n', out); total++; break;
+                        case 't':  fputc('\t', out); total++; break;
+                        case 'r':  break;
+                        case '"':  fputc('"', out); total++; break;
+                        case '\\': fputc('\\', out); total++; break;
+                        case 'u':
+                            if (s + 4 < p) {
+                                unsigned int cp = 0;
+                                for (int i = 1; i <= 4; i++) {
+                                    char c = s[i]; cp <<= 4;
+                                    if (c >= '0' && c <= '9') cp |= c - '0';
+                                    else if (c >= 'a' && c <= 'f') cp |= c - 'a' + 10;
+                                    else if (c >= 'A' && c <= 'F') cp |= c - 'A' + 10;
+                                }
+                                s += 4;
+                                if (cp < 0x80) { fputc(cp, out); total++; }
+                                else if (cp < 0x800) {
+                                    fputc(0xC0|(cp>>6), out); fputc(0x80|(cp&0x3F), out); total+=2;
+                                } else {
+                                    fputc(0xE0|(cp>>12), out); fputc(0x80|((cp>>6)&0x3F), out);
+                                    fputc(0x80|(cp&0x3F), out); total+=3;
+                                }
+                            }
+                            break;
+                        default: fputc(*s, out); total++; break;
+                    }
+                    s++;
+                } else { fputc(*s, out); total++; s++; }
+            }
+            fputs("\n\n", out); total += 2;
+            if (*p == '"') p++;
+        } else { p++; }
+    }
+    return total;
+}
+
+// Download training data from HuggingFace using curl (paginated)
+static int data_auto_download(const char* out_path) {
+    struct stat st;
+    if (stat(out_path, &st) == 0 && st.st_size > DL_MIN_SIZE) {
+        printf("[data] found existing %s (%ld bytes)\n", out_path, (long)st.st_size);
+        return 0;
+    }
+    
+    printf("[data] downloading FineWeb-Edu from HuggingFace...\n");
+    printf("[data] no Python. no pip. just curl + C.\n");
+    
+    FILE* fout = fopen(out_path, "w");
+    if (!fout) { fprintf(stderr, "[data] cannot create %s\n", out_path); return -1; }
+    
+    char tmp_json[256];
+    snprintf(tmp_json, sizeof(tmp_json), "%s.tmp", out_path);
+    
+    long total_bytes = 0;
+    int chunks = (DL_TOTAL_ROWS + DL_CHUNK_SIZE - 1) / DL_CHUNK_SIZE;
+    
+    for (int c = 0; c < chunks; c++) {
+        int offset = c * DL_CHUNK_SIZE;
+        int length = DL_CHUNK_SIZE;
+        if (offset + length > DL_TOTAL_ROWS) length = DL_TOTAL_ROWS - offset;
+        
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+            "curl -sL --connect-timeout 15 --max-time 60 "
+            "'https://datasets-server.huggingface.co/rows?"
+            "dataset=%s&config=%s&split=%s&offset=%d&length=%d' "
+            "-o '%s' 2>/dev/null",
+            DL_HF_DATASET, DL_HF_CONFIG, DL_HF_SPLIT,
+            offset, length, tmp_json);
+        
+        int rc = system(cmd);
+        if (rc != 0) {
+            printf("\n[data] chunk %d/%d failed, stopping\n", c+1, chunks);
+            break;
+        }
+        
+        // Read JSON and extract
+        struct stat jst;
+        if (stat(tmp_json, &jst) != 0 || jst.st_size < 100) {
+            printf("x"); fflush(stdout);
+            continue;
+        }
+        
+        FILE* fj = fopen(tmp_json, "rb");
+        if (!fj) continue;
+        char* json = (char*)malloc(jst.st_size + 1);
+        if (!json) { fclose(fj); continue; }
+        long jlen = fread(json, 1, jst.st_size, fj);
+        json[jlen] = 0;
+        fclose(fj);
+        
+        long extracted = hf_extract_texts(json, jlen, fout);
+        free(json);
+        total_bytes += extracted;
+        
+        printf("\r[data] %d/%d chunks, %.1f MB extracted",
+               c+1, chunks, (double)total_bytes / (1024*1024));
+        fflush(stdout);
+    }
+    
+    printf("\n");
+    fclose(fout);
+    remove(tmp_json);
+    
+    if (total_bytes < DL_MIN_SIZE) {
+        fprintf(stderr, "[data] only %ld bytes extracted — not enough\n", total_bytes);
+        remove(out_path);
+        return -1;
+    }
+    
+    printf("[data] done: %.1f MB clean text from FineWeb-Edu\n",
+           (double)total_bytes / (1024*1024));
+    return 0;
+}
+
 // Data — now works with encoded token IDs
 // ═══════════════════════════════════════════════════════════════════
 
@@ -378,6 +536,18 @@ int main(int argc, char** argv) {
 
     // Load data
     DataLoader dl;
+
+    // Auto-download from HuggingFace if no data file
+    {
+        struct stat _st;
+        if (stat(cfg.data_path, &_st) != 0 || _st.st_size < DL_MIN_SIZE) {
+            printf("[data] %s not found or too small, downloading FineWeb-Edu...\n", cfg.data_path);
+            if (data_auto_download(cfg.data_path) != 0) {
+                fprintf(stderr, "ERROR: could not download data. provide a file manually.\n");
+                return 1;
+            }
+        }
+    }
     if (data_load(&dl, cfg.data_path) != 0) return 1;
     printf("Data:       %ld bytes (%.2f MB)\n", dl.raw_size, (double)dl.raw_size / (1024*1024));
 
@@ -423,6 +593,9 @@ int main(int argc, char** argv) {
     // Init AML
     am_init();
     am_persistent_mode(1);
+#ifdef USE_CUDA
+    if (gpu_init() != 0) fprintf(stderr, "GPU init failed\n");
+#endif
 
     // Set hyperparams
     {
