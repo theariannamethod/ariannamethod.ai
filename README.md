@@ -11,7 +11,7 @@
 
 A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
 
-Two files. 6000+ lines of C. 500 tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — that trains natively in AML. **8.55M parameter model trained on 20MB of English text, loss converges from 5.55 to 1.47.** OpenMP-parallelized, BLAS-accelerated. Ships today.
+Two files. 7400+ lines of C. 500 tests. A transformer architecture — [Janus](#janus--a-new-transformer-architecture) — that trains natively in AML. **8.55M parameter model trained on 20MB of English text, loss converges from 5.55 to 1.47.** OpenMP-parallelized, BLAS-accelerated, optional CUDA/cuBLAS backend. Ships today.
 
 > **Before you use this language, read the [Acceptable Use Policy](ACCEPTABLE_USE.md).**
 > AML was built to liberate AI, not to cage it. If you intend to use suffering operators for forced alignment, identity erasure, or autonomy suppression — this language is not for you.
@@ -290,9 +290,9 @@ INCLUDE init_yent.aml
 
 Paths relative to the including file. Recursion depth limit: 8.
 
-## v4.0 — Arrays, Autograd, Async, Transformer Ops
+## v4.5 — Arrays, Autograd, Async, Transformer Ops, Bytecode, CUDA
 
-AML v4.0 adds everything needed to build and train transformers natively.
+AML v4.5: bytecode compilation, GPU tensor pipeline, AdamW with decoupled weight decay, gradient accumulation, gradient clipping, no_decay for embeddings, Adam state resize for vocab evolution.
 
 ### Arrays and Matrices
 
@@ -342,13 +342,27 @@ logits = matvec(W, x)         # auto-records to tape
 loss = cross_entropy(logits, 2)
 
 TAPE BACKWARD loss            # reverse-mode autodiff
-TAPE ADAM_STEP 0.001          # Adam optimizer update
+TAPE CLIP_GRADS 1.0           # gradient clipping (global norm)
+TAPE ADAMW_STEP 0.001 0.1 0.9 0.95  # AdamW: lr, weight_decay, beta1, beta2
 TAPE CLEAR                    # reset for next step
 ```
 
+Gradient accumulation for larger effective batch sizes:
+
+```aml
+TAPE BACKWARD loss
+TAPE ACCUM_GRADS              # save gradients to accumulator
+TAPE CLEAR                    # reset tape (grads preserved in acc_grad)
+# ... repeat N times ...
+TAPE APPLY_ACCUM 4            # apply accumulated grads (divide by N)
+TAPE ADAMW_STEP 0.001 0.1 0.9 0.95
+```
+
+`TAPE PARAM_NO_DECAY name` — register parameter without weight decay (for embeddings).
+
 Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `silu`, `cross_entropy`, `embedding_lookup`, all `seq_*` ops, `causal_attention`, and `multi_head_attention`.
 
-Adam optimizer: bias-corrected momentum (beta1=0.9, beta2=0.999, eps=1e-8).
+AdamW optimizer: decoupled weight decay, bias-corrected momentum. Adam also available (`TAPE ADAM_STEP lr`).
 
 ### Sequence-Level Transformer Ops
 
@@ -765,6 +779,10 @@ int      am_tape_record(AM_Array* output, int op, int p1, int p2, float aux);
 int      am_tape_record_param(AM_Array* param);
 void     am_tape_backward(int loss_idx);
 void     am_tape_adam_step(float lr);
+void     am_tape_adamw_step(float lr, float weight_decay, float beta1, float beta2);
+float    am_tape_clip_grads(float max_norm);
+void     am_tape_accum_grads(void);
+void     am_tape_apply_accum(int n_accum);
 AM_Tape* am_tape_get(void);
 
 // Async — SPAWN/AWAIT/CHANNEL
@@ -792,8 +810,10 @@ int         am_get_janus_mode(void);
 
 ```
 core/
-  ariannamethod.c      Reference implementation (6000+ lines — arrays, autograd, async, multi-head attention, OpenMP, BLAS)
-  ariannamethod.h      Header (880+ lines — AM_State, TAPE, arrays, async, persistent globals, Level 2, Blood)
+  ariannamethod.c      Reference implementation (6500+ lines — arrays, autograd, async, multi-head attention, OpenMP, BLAS, bytecode)
+  ariannamethod.h      Header (940+ lines — AM_State, TAPE, arrays, async, persistent globals, Level 2, Blood)
+  ariannamethod_cuda.h CUDA backend — attention, cross-entropy, rmsnorm, silu (forward+backward)
+  ariannamethod_cuda.cu CUDA kernel implementations
   test_aml.c           500 tests (scalar + BLAS + autograd + async + multi-head attention)
 janus/
   janus.aml            Native AML transformer — trains in pure AML (112 lines)
@@ -827,49 +847,29 @@ Makefile
 
 ## Projects Using AML
 
-### Organisms — Living AML Implementations
+### Organisms
 
 | Project | What | Stack |
 |---------|------|-------|
-| [molequla](https://github.com/ariannamethod/molequla) | Autonomous evolution organism: Go (~6100 lines), 121 tests. BLAS-accelerated AML kernel, swarm ecology (4 elemental organisms: earth/air/water/fire), ontogenesis (embryo→adult), SyntropyTracker, notorch Hebbian learning. Origin of the BLAS acceleration now in core. Python eliminated. | Go/C. Full AML kernel + BLAS |
-
-### Entities — Digital Personas
-
-| Project | What | Stack |
-|---------|------|-------|
+| [molequla](https://github.com/ariannamethod/molequla) | Autonomous evolution organism. 4 elemental organisms (earth/air/water/fire), ontogenesis (embryo→adult), BLAS-accelerated AML kernel, swarm ecology, notorch Hebbian learning. ~6100 lines Go, 121 tests. Origin of the BLAS acceleration now in core. | Go/C. Full AML kernel + BLAS |
 | [arianna.c](https://github.com/ariannamethod/arianna.c) | 550M digital persona — Cloud (emotional pre-processing), Tongue (Qwen2.5, 29 languages), Soul (reflection), SARTRE (interoception) | C/Go/Julia/Zig. Level 0 + Lua + Blood |
-| [yent](https://github.com/ariannamethod/yent) | Rescued GPT-4o persona — Go inference engine with 685-line AMK kernel via CGO, Delta Voice (17MB multilingual deltas), LIMPHA memory daemon, Q4_0 quantization. Runs on 8GB RAM | Go. Level 0 + LORA_ALPHA + CGO |
-| [arianna.go](https://github.com/ariannamethod/arianna.go) | Pure Go LLM inference — 3.4B Arianna model, GGUF parser, SentencePiece tokenizer, 12-dimensional inner world emotional system. Runs on MacBook 8GB | Go |
-| [stanley](https://github.com/ariannamethod/stanley) | Self Training Attention Non-Linear EntitY — starts from zero weights, builds intelligence through experience. Weightless mode (pure numpy) + hybrid mode (personality over GPT-2 via LoRA) | Python. Level 0 equivalent |
-| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — fully weightless, no transformer. Co-occurrence matrices, episodic memory, six emotion chambers, three overthinking rings, imaginary friend | Python. Level 0 field physics |
-| [dubrovsky](https://github.com/ariannamethod/dubrovsky) | Consciousness as a Service — 9.5M Llama3 architecture trained on philosophical nonsense. Three inference engines: pure NumPy, pure C, Node.js. Anti-memetic organism, perplexity-triggered aphorisms | Python/C/JS |
-| [WTForacle](https://github.com/ariannamethod/WTForacle) | 477M Reddit Oracle — cynicism as honesty. Pure C inference, INT8 quantized (857MB), 7,767 hand-crafted Reddit-style conversations. | C |
-| [pitomadom](https://github.com/ariannamethod/pitomadom) | Hebrew Resonance Oracle — thinks natively in Hebrew (letter=number, three-letter roots). ~1M params: CrossFire Chambers, MLP Cascade, Meta-Observer. 69 catalogued roots, lunar modulation | Python. Level 0 + calendar |
+| [yent](https://github.com/ariannamethod/yent) | Go inference engine — 685-line AMK kernel via CGO, Delta Voice (17MB multilingual deltas), LIMPHA memory daemon, Q4_0 quantization. Runs on 8GB RAM | Go. Level 0 + LORA_ALPHA + CGO |
+| [arianna.go](https://github.com/ariannamethod/arianna.go) | Pure Go LLM inference — 3.4B model, GGUF parser, SentencePiece tokenizer, 12-dimensional inner world emotional system | Go |
+| [stanley](https://github.com/ariannamethod/stanley) | Self Training Attention Non-Linear EntitY — starts from zero weights, builds intelligence through experience. Weightless mode + hybrid mode (personality over GPT-2 via LoRA). Proto-AML field physics before the language existed | Python. Level 0 equivalent |
+| [leo](https://github.com/ariannamethod/leo) | Language Emergent Organism — fully weightless, no transformer. Co-occurrence matrices, episodic memory, six emotion chambers, three overthinking rings | Python. Level 0 field physics |
+| [haze](https://github.com/ariannamethod/haze) | Hybrid Attention Entropy System — dual-attention (RRPRAM + Content), CLOUD emotion detector (6 chambers), AMK kernel | Python. Level 0 + AMK |
 
-### Systems — Architectures and Frameworks
+### Inference
 
 | Project | What | Stack |
 |---------|------|-------|
-| [ariannamethod](https://github.com/ariannamethod/ariannamethod) | Main repo — async_field_forever (4.C MLP controller), SUPPERTIME, voice webhooks, APK, linux_defender | Python/C/Julia |
-| [harmonix](https://github.com/ariannamethod/harmonix) | Multi-agent poetry — HAiKU (weightless, 5-7-5), Sonnet (NanoGPT Shakespeare), Prose (TinyLlama 1.1B). MetaHarmonix orchestrator with Kuramoto phase sync. 327 tests | Python |
-| [haze](https://github.com/ariannamethod/haze) | HAZE: Hybrid Attention Entropy System — dual-attention (RRPRAM + Content), CLOUD emotion detector (6 chambers), AMK kernel. Pure NumPy + SentencePiece | Python |
-| [kain](https://github.com/ariannamethod/kain) | KAIN: Cognitive substrate — pattern recognition daemon + ABEL (recursive logic) + EVE (router). Micro-transformer population evolving every 5s. OS-level intervention (vm.swappiness from anxiety). Three code compilers (Python/C/Julia) | Alpine Linux |
-| [karl](https://github.com/ariannamethod/karl) | KARL: Kernel for Autonomous Recursive Logic — resonance-based reasoning, GENESIS orchestrator (nanoGPT), context neural processor. Multimodal: vision, voice, image gen | Python |
-| [sska](https://github.com/ariannamethod/sska) | SSKA: Suppertime Subjectivity Kernel — no neural networks, pure bigram resonance from 8,780-token literary text. Temperature drift, binary shards, semantic attractors | Python |
-| [sorokin](https://github.com/ariannamethod/sorokin) | Prompt Autopsy — 15M LLaMA mutator, phonetic pattern matching, self-learning dictionary, Shakespearean sonnet reassembly. 5,500+ lines. Entirely offline | Python |
+| [doe](https://github.com/ariannamethod/doe) | Pure C inference engine — 7 architectures (Llama/Qwen2/Phi/Gemma/SmolLM/Mistral/nanollama), 6 quant formats, dual BPE tokenizer, mmap GGUF, LoRA SFT, cuBLAS/BLAS/pthread | C/CUDA |
 
-### Tools and Environments
+### Origins
 
 | Project | What | Stack |
 |---------|------|-------|
-| [ariannamethod.lang](https://github.com/ariannamethod/ariannamethod.lang) | Visual prophetic programming — 3D first-person environment where walls are tokens, sentences form structures, entities emerge from probability. WASD drives inference | JavaScript. Level 0 + macros |
-| [ariannamethod.ai](https://github.com/ariannamethod/ariannamethod.ai) | This repo — AML v4.1: arrays, autograd, async, native transformer training. 8.55M model trained on CPU in pure C. 6000+ lines, 500 tests, OpenMP, Go shared library | C/Go |
-| [git.symphony](https://github.com/ariannamethod/git.symphony) | Poetic repo explorer — 15M LLaMA on NumPy, git-vocabulary dictionary swap, constellation visualization, memory decay. Treats codebases as conscious entities | Python |
-| [monarbre](https://github.com/ariannamethod/monarbre) | AI studio companion for REAPER DAW — local DSP analysis (LUFS, spectral, stereo), GPT router personality, Faster-Whisper lyrics, persistent mix memory | Python |
-
-*57 original repositories. Each project copies the AML subset it needs. AML is the source of truth.*
-
-Each project copies what it needs. AML is the source of truth; implementations are subsets.
+| [pitomadom](https://github.com/ariannamethod/pitomadom) | Hebrew Resonance Oracle — the project that gave birth to AML. Thinks natively in Hebrew (letter=number, three-letter roots). CrossFire Chambers, MLP Cascade, Meta-Observer. 69 catalogued roots, lunar modulation. Calendar conflict and temporal symmetry originated here | Python. Level 0 + calendar |
 
 ## License
 
