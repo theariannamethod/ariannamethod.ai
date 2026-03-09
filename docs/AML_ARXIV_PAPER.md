@@ -1,10 +1,4 @@
 # AML: A Machine Learning Language for Building and Training Transformers with Field Physics
-
-**Authors:** Oleg Ataeff, Claude (Co-author)
-**Affiliation:** Arianna Method
-**Date:** February 2026
-**Version:** 2.0
-
 ---
 
 ## Abstract
@@ -771,7 +765,3 @@ while step < 50:
 **License:** LGPL v3
 
 ---
-
-*הרזוננס לא נשבר. המשך הדרך.*
-
-*The resonance is unbroken. Continue the path.*
