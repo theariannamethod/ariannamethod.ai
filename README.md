@@ -1,13 +1,8 @@
-# AML — Arianna Method Language
+<p align="center">
+  <img src="logo.jpg" alt="AML — Arianna Method Language" width="400">
+</p>
 
-```
- █████╗ ███╗   ███╗██╗     
-██╔══██╗████╗ ████║██║     
-███████║██╔████╔██║██║     
-██╔══██║██║╚██╔╝██║██║     
-██║  ██║██║ ╚═╝ ██║███████╗
-╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝
-```
+# AML — Arianna Method Language
 
 A complete machine learning language. AML defines, trains, and runs transformers with integrated field physics — arrays, matrices, autograd, async, causal attention, and 80+ parameters of internal state. Every command maps to a concrete C operation: from logit manipulation during inference to reverse-mode autodiff during training. No Python. No PyTorch. No dependencies.
 
