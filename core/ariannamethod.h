@@ -678,6 +678,62 @@ void am_tape_apply_accum(int n_accum); // apply accumulated grads (divide by n_a
 void am_tape_chuck_step(float lr, float loss_val);
 AM_Tape* am_tape_get(void);
 
+// Save/Load params to binary file. All tape entries marked is_param are written
+// in tape-order. Load verifies magic + per-param length, writes into existing
+// param arrays in tape-order. Model layout must match between save and load.
+int am_tape_save(const char* path);
+int am_tape_load(const char* path);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LR SCHEDULE — cosine / step / linear decay with warmup
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#define AM_SCHED_NONE     0
+#define AM_SCHED_COSINE   1   // cosine annealing to min_lr
+#define AM_SCHED_STEP     2   // multiply by gamma every step_size steps
+#define AM_SCHED_LINEAR   3   // linear decay to min_lr
+
+typedef struct {
+    int   type;               // AM_SCHED_*
+    float base_lr;            // starting learning rate
+    float min_lr;             // floor
+    int   warmup_steps;       // linear warmup from min_lr to base_lr
+    int   total_steps;        // for cosine/linear: total training steps
+    int   step_size;          // decay every N steps (AM_SCHED_STEP)
+    float step_gamma;         // multiply factor (AM_SCHED_STEP, default 0.1)
+    int   current_step;       // internal counter
+} AM_Schedule;
+
+AM_Schedule am_schedule_cosine(float base_lr, int warmup_steps, int total_steps, float min_lr);
+AM_Schedule am_schedule_step(float base_lr, int warmup_steps, int step_size, float gamma);
+AM_Schedule am_schedule_linear(float base_lr, int warmup_steps, int total_steps, float min_lr);
+float am_schedule_get_lr(AM_Schedule* s);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NaN/Inf GUARD — detect divergence, auto loss scaling
+// ═══════════════════════════════════════════════════════════════════════════════
+
+typedef struct {
+    float loss_scale;         // dynamic loss scale (starts at 1.0)
+    float scale_factor;       // multiply/divide by this (default 2.0)
+    int   stable_steps;       // consecutive clean steps
+    int   scale_window;       // increase scale after this many clean steps
+    int   total_nan_count;    // lifetime NaN detections
+    int   skipped_steps;      // steps skipped due to NaN
+} AM_NanGuard;
+
+AM_NanGuard am_nan_guard_new(void);
+// Returns 1 if clean, 0 if NaN/Inf detected. On NaN: zeros grads, halves loss_scale.
+// On clean: increments stable_steps, doubles loss_scale every scale_window steps.
+int am_nan_guard_check(AM_NanGuard* guard);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAINING MODE — global flag consulted by dropout and similar training-only ops
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void am_train_mode(int training);   // 1 = training, 0 = eval
+int  am_is_training(void);
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ASYNC (v4.0 Phase 4) — SPAWN/AWAIT/CHANNEL
 // pthreads-based parallel execution. Each SPAWN gets its own AML_ExecCtx

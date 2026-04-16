@@ -386,6 +386,36 @@ Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `soft
 
 AdamW optimizer: decoupled weight decay, bias-corrected momentum. Adam also available (`TAPE ADAM_STEP lr`).
 
+### LR Schedules, NaN Guard, Train/Eval, Save/Load
+
+Training infrastructure that lets an AML script run a full stable training loop without reaching into C. All four live under `TAPE`, consistent with the rest of the optimizer surface.
+
+```aml
+# LR schedule: set once, step forward each iteration, read into a variable
+TAPE LR_COSINE 0.001 500 10000 0.00001    # base_lr, warmup, total, min_lr
+# TAPE LR_STEP   0.01  0   2000  0.1       # base_lr, warmup, step_size, gamma
+# TAPE LR_LINEAR 0.001 500 10000 0.00001   # base_lr, warmup, total, min_lr
+
+TAPE LR_NEXT lr                            # advance schedule, store current lr
+TAPE ADAMW_STEP lr 0.1 0.9 0.95            # consume in the optimizer step
+
+# NaN/Inf guard: detect divergence, zero bad grads, auto loss-scale
+TAPE NAN_GUARD_INIT                        # (optional — auto on first NAN_CHECK)
+TAPE NAN_CHECK clean                       # after BACKWARD: clean=1 if safe, 0 if NaN
+if clean > 0:
+    TAPE ADAMW_STEP lr 0.1 0.9 0.95        # only step on clean grads
+
+# Train / eval mode — consulted by dropout and other train-only ops
+TAPE TRAIN_MODE                            # enable dropout, training behavior
+TAPE EVAL_MODE                             # disable dropout, deterministic forward
+
+# Save / load all registered params (binary, tape-order)
+TAPE SAVE "weights.bin"                    # dump every TAPE PARAM array
+TAPE LOAD "weights.bin"                    # restore into the same model layout
+```
+
+Schedules do linear warmup from `min_lr` to `base_lr` over `warmup` steps, then decay (cosine anneal / step-gamma / linear) down to `min_lr`. NaN guard halves a dynamic `loss_scale` when it zeroes bad grads, doubles it every `scale_window` clean steps. `TAPE SAVE` writes the magic `AMLE`, param count, and each param's length + float data in tape order — `TAPE LOAD` refuses mismatched layouts rather than silently loading half a model.
+
 ### Sequence-Level Transformer Ops
 
 Fused operations for processing token sequences. Each has full autograd backward.

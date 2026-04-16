@@ -1053,6 +1053,13 @@ static void invalidate_gpu(AM_Array* arr) {
 
 static AM_Tape g_tape = {0};
 
+// Global LR schedule and NaN guard shared by the AML TAPE LR_* / NAN_* commands.
+// One per-process is enough for the language layer — C API users can still
+// construct their own AM_Schedule / AM_NanGuard values locally.
+static AM_Schedule g_aml_schedule = {0};
+static AM_NanGuard g_aml_nan_guard = {0};
+static int         g_aml_nan_guard_inited = 0;
+
 void am_tape_start(void) {
     // Clear any existing tape state
     am_tape_clear();
@@ -2124,6 +2131,201 @@ void am_tape_chuck_step(float lr, float loss_val) {
         param_idx++;
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SAVE / LOAD — persist trainable params (tape entries with is_param=1)
+// Binary format: magic(4) | n_params(4) | for each: len(4) | data[len * float]
+// Tape-order dependent: load into a model with the same param layout.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#define AM_SAVE_MAGIC 0x414D4C45u   // 'AMLE' — AML Essence
+
+int am_tape_save(const char* path) {
+    if (!path) return -1;
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    uint32_t magic = AM_SAVE_MAGIC;
+    int32_t n = g_tape.n_params;
+    if (fwrite(&magic, 4, 1, f) != 1 || fwrite(&n, 4, 1, f) != 1) {
+        fclose(f); return -1;
+    }
+    int written = 0;
+    for (int i = 0; i < g_tape.count && written < n; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->output) continue;
+        int32_t len = e->output->len;
+        if (fwrite(&len, 4, 1, f) != 1 ||
+            fwrite(e->output->data, sizeof(float), (size_t)len, f) != (size_t)len) {
+            fclose(f); return -1;
+        }
+        written++;
+    }
+    fclose(f);
+    return written == n ? 0 : -1;
+}
+
+int am_tape_load(const char* path) {
+    if (!path) return -1;
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    uint32_t magic = 0;
+    int32_t  n = 0;
+    if (fread(&magic, 4, 1, f) != 1 || magic != AM_SAVE_MAGIC) { fclose(f); return -1; }
+    if (fread(&n, 4, 1, f) != 1 || n <= 0) { fclose(f); return -1; }
+    if (n != g_tape.n_params) { fclose(f); return -1; }  // layout mismatch
+    int loaded = 0;
+    for (int i = 0; i < g_tape.count && loaded < n; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->output) continue;
+        int32_t len = 0;
+        if (fread(&len, 4, 1, f) != 1 || len != e->output->len) {
+            fclose(f); return -1;
+        }
+        if (fread(e->output->data, sizeof(float), (size_t)len, f) != (size_t)len) {
+            fclose(f); return -1;
+        }
+        loaded++;
+    }
+    fclose(f);
+    return loaded == n ? 0 : -1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LR SCHEDULE — cosine / step / linear, all with optional linear warmup
+// ═══════════════════════════════════════════════════════════════════════════════
+
+AM_Schedule am_schedule_cosine(float base_lr, int warmup_steps, int total_steps, float min_lr) {
+    AM_Schedule s = {0};
+    s.type = AM_SCHED_COSINE;
+    s.base_lr = base_lr;
+    s.min_lr = min_lr;
+    s.warmup_steps = warmup_steps;
+    s.total_steps = total_steps > 0 ? total_steps : 1;
+    return s;
+}
+
+AM_Schedule am_schedule_step(float base_lr, int warmup_steps, int step_size, float gamma) {
+    AM_Schedule s = {0};
+    s.type = AM_SCHED_STEP;
+    s.base_lr = base_lr;
+    s.warmup_steps = warmup_steps;
+    s.step_size = step_size > 0 ? step_size : 1;
+    s.step_gamma = gamma > 0 ? gamma : 0.1f;
+    return s;
+}
+
+AM_Schedule am_schedule_linear(float base_lr, int warmup_steps, int total_steps, float min_lr) {
+    AM_Schedule s = {0};
+    s.type = AM_SCHED_LINEAR;
+    s.base_lr = base_lr;
+    s.min_lr = min_lr;
+    s.warmup_steps = warmup_steps;
+    s.total_steps = total_steps > 0 ? total_steps : 1;
+    return s;
+}
+
+float am_schedule_get_lr(AM_Schedule* s) {
+    if (!s) return 0.001f;
+    int step = s->current_step++;
+    float lr = s->base_lr;
+
+    // Linear warmup from min_lr to base_lr over warmup_steps
+    if (step < s->warmup_steps && s->warmup_steps > 0) {
+        float t = (float)step / (float)s->warmup_steps;
+        return s->min_lr + t * (s->base_lr - s->min_lr);
+    }
+
+    int decay_step = step - s->warmup_steps;
+
+    switch (s->type) {
+    case AM_SCHED_COSINE: {
+        int decay_total = s->total_steps - s->warmup_steps;
+        if (decay_total <= 0) return lr;
+        float progress = (float)decay_step / (float)decay_total;
+        if (progress > 1.0f) progress = 1.0f;
+        lr = s->min_lr + 0.5f * (s->base_lr - s->min_lr) * (1.0f + cosf(3.14159265f * progress));
+        break;
+    }
+    case AM_SCHED_STEP: {
+        int n_decays = decay_step / s->step_size;
+        lr = s->base_lr * powf(s->step_gamma, (float)n_decays);
+        break;
+    }
+    case AM_SCHED_LINEAR: {
+        int decay_total = s->total_steps - s->warmup_steps;
+        if (decay_total <= 0) return lr;
+        float progress = (float)decay_step / (float)decay_total;
+        if (progress > 1.0f) progress = 1.0f;
+        lr = s->base_lr - progress * (s->base_lr - s->min_lr);
+        break;
+    }
+    default:
+        break;
+    }
+    return lr;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NaN/Inf GUARD — scan all param grads, zero them if any NaN/Inf detected,
+// adjust dynamic loss_scale.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+AM_NanGuard am_nan_guard_new(void) {
+    AM_NanGuard g = {0};
+    g.loss_scale = 1.0f;
+    g.scale_factor = 2.0f;
+    g.scale_window = 100;
+    return g;
+}
+
+int am_nan_guard_check(AM_NanGuard* guard) {
+    if (!guard) return 1;
+    int has_nan = 0;
+
+    for (int i = 0; i < g_tape.count && !has_nan; i++) {
+        AM_TapeEntry* e = &g_tape.entries[i];
+        if (!e->is_param || !e->grad) continue;
+        int n = e->grad->len;
+        for (int j = 0; j < n; j++) {
+            float gv = e->grad->data[j];
+            // NaN: gv != gv. Inf: +/- infinity.
+            if (gv != gv || gv == 1.0f/0.0f || gv == -1.0f/0.0f) {
+                has_nan = 1;
+                break;
+            }
+        }
+    }
+
+    if (has_nan) {
+        for (int i = 0; i < g_tape.count; i++) {
+            AM_TapeEntry* e = &g_tape.entries[i];
+            if (!e->is_param || !e->grad) continue;
+            memset(e->grad->data, 0, (size_t)e->grad->len * sizeof(float));
+        }
+        guard->loss_scale /= guard->scale_factor;
+        if (guard->loss_scale < 1.0f) guard->loss_scale = 1.0f;
+        guard->total_nan_count++;
+        guard->skipped_steps++;
+        guard->stable_steps = 0;
+        return 0;
+    }
+
+    guard->stable_steps++;
+    if (guard->scale_window > 0 && guard->stable_steps >= guard->scale_window) {
+        guard->loss_scale *= guard->scale_factor;
+        guard->stable_steps = 0;
+    }
+    return 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRAINING MODE — global flag. Dropout and similar ops consult it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static int g_training_mode = 1;  // default: training
+
+void am_train_mode(int training) { g_training_mode = training ? 1 : 0; }
+int  am_is_training(void)        { return g_training_mode; }
 
 // Find tape entry index by array pointer (-1 if not found)
 static int tape_find_entry(AM_Array* arr) {
@@ -3808,6 +4010,86 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
             if (nd && idx >= 0) g_tape.entries[idx].no_decay = 1;
           }
         }
+      }
+      // ─── Save/load registered params (binary, tape-order) ───
+      else if (!strcmp(subcmd, "SAVE")) {
+        // TAPE SAVE "path.bin" — write all registered params to file
+        char path[512] = {0};
+        // Strip quotes if present
+        const char* p = rest;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '"') { p++; int k = 0;
+          while (*p && *p != '"' && k < (int)sizeof(path)-1) path[k++] = *p++;
+        } else {
+          sscanf(rest, "%511s", path);
+        }
+        if (path[0]) am_tape_save(path);
+      }
+      else if (!strcmp(subcmd, "LOAD")) {
+        // TAPE LOAD "path.bin" — read params back into existing tape params
+        char path[512] = {0};
+        const char* p = rest;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '"') { p++; int k = 0;
+          while (*p && *p != '"' && k < (int)sizeof(path)-1) path[k++] = *p++;
+        } else {
+          sscanf(rest, "%511s", path);
+        }
+        if (path[0]) am_tape_load(path);
+      }
+      // ─── LR schedules (one global schedule per tape) ───
+      else if (!strcmp(subcmd, "LR_COSINE") || !strcmp(subcmd, "LR_STEP") ||
+               !strcmp(subcmd, "LR_LINEAR")) {
+        char a1[32]={0}, a2[32]={0}, a3[32]={0}, a4[32]={0};
+        sscanf(rest, "%31s %31s %31s %31s", a1, a2, a3, a4);
+        float base = a1[0] ? ctx_float(ctx, a1) : 0.001f;
+        int   w    = a2[0] ? (int)ctx_float(ctx, a2) : 0;
+        float p3   = a3[0] ? ctx_float(ctx, a3) : 0.0f;
+        float p4   = a4[0] ? ctx_float(ctx, a4) : 0.0f;
+        if (!strcmp(subcmd, "LR_COSINE"))
+            g_aml_schedule = am_schedule_cosine(base, w, (int)p3, p4);
+        else if (!strcmp(subcmd, "LR_STEP"))
+            g_aml_schedule = am_schedule_step(base, w, (int)p3, p4);
+        else
+            g_aml_schedule = am_schedule_linear(base, w, (int)p3, p4);
+      }
+      else if (!strcmp(subcmd, "LR_NEXT")) {
+        // TAPE LR_NEXT <var> — advance schedule, store current lr in <var>
+        char vname[AML_MAX_NAME] = {0};
+        sscanf(rest, "%31s", vname);
+        float lr = am_schedule_get_lr(&g_aml_schedule);
+        if (vname[0] && ctx) {
+          char cmd[128];
+          snprintf(cmd, sizeof(cmd), "%s = %.8f", vname, lr);
+          am_exec(cmd);
+        }
+      }
+      // ─── NaN/Inf guard ───
+      else if (!strcmp(subcmd, "NAN_GUARD_INIT")) {
+        g_aml_nan_guard = am_nan_guard_new();
+        g_aml_nan_guard_inited = 1;
+      }
+      else if (!strcmp(subcmd, "NAN_CHECK")) {
+        // TAPE NAN_CHECK [<var>] — check for NaN in grads; if <var> given,
+        // store 1 (clean) or 0 (NaN found and grads zeroed) into it
+        if (!g_aml_nan_guard_inited) {
+          g_aml_nan_guard = am_nan_guard_new();
+          g_aml_nan_guard_inited = 1;
+        }
+        int ok = am_nan_guard_check(&g_aml_nan_guard);
+        char vname[AML_MAX_NAME] = {0};
+        sscanf(rest, "%31s", vname);
+        if (vname[0] && ctx) {
+          char cmd[64]; snprintf(cmd, sizeof(cmd), "%s = %d", vname, ok);
+          am_exec(cmd);
+        }
+      }
+      // ─── Train/eval mode (global, consulted by dropout) ───
+      else if (!strcmp(subcmd, "TRAIN_MODE")) {
+        am_train_mode(1);
+      }
+      else if (!strcmp(subcmd, "EVAL_MODE")) {
+        am_train_mode(0);
       }
     }
 
