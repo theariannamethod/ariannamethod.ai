@@ -331,7 +331,11 @@ C = matmul(A, B)              # matrix-matrix multiply
 
 y = softmax(x)                # softmax
 y = rmsnorm(x)                # RMS normalization
-y = silu(x)                   # SiLU activation
+y = layernorm(x)              # LayerNorm (zero-mean, unit-var, eps=1e-5)
+y = layernorm(x, gamma, beta) # LayerNorm with affine gamma/beta
+y = silu(x)                   # SiLU / Swish activation
+y = gelu(x)                   # GELU (tanh approximation)
+y = dropout(x, 0.1)           # inverted dropout (skipped in eval mode)
 y = add(x, y)                 # element-wise add
 y = mul(x, y)                 # element-wise multiply
 y = scale(x, 0.5)             # scalar multiply
@@ -382,7 +386,7 @@ TAPE ADAMW_STEP 0.001 0.1 0.9 0.95
 
 `TAPE PARAM_NO_DECAY name` — register parameter without weight decay (for embeddings).
 
-Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `silu`, `cross_entropy`, `embedding_lookup`, all `seq_*` ops, `causal_attention`, and `multi_head_attention`.
+Operations that record to tape: `matvec`, `matmul`, `add`, `mul`, `scale`, `softmax`, `rmsnorm`, `layernorm`, `seq_layernorm`, `silu`, `gelu`, `dropout`, `cross_entropy`, `embedding_lookup`, all `seq_*` ops, `causal_attention`, and `multi_head_attention`.
 
 AdamW optimizer: decoupled weight decay, bias-corrected momentum. Adam also available (`TAPE ADAM_STEP lr`).
 
@@ -432,6 +436,9 @@ y = seq_matvec(W, x, T)
 
 # RMSNorm each D-sized chunk independently
 h = seq_rmsnorm(h, T, D)
+
+# LayerNorm per T positions (mean + variance subtracted, optional gamma/beta)
+h = seq_layernorm(h, gamma, beta, T, D)
 
 # Rotary Position Embedding on Q and K
 q = rope(q, T, head_dim)

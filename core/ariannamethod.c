@@ -1399,6 +1399,154 @@ void am_tape_backward(int loss_idx) {
             }
             break;
         }
+        case AM_OP_GELU: {
+            // y = 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+            if (e->parent1 >= 0) {
+                AM_TapeEntry* px = &g_tape.entries[e->parent1];
+                float* gx = (float*)calloc(out_len, sizeof(float));
+                if (gx) {
+                    for (int i = 0; i < out_len; i++) {
+                        float x = px->output->data[i];
+                        float x3 = x * x * x;
+                        float inner = 0.7978845608f * (x + 0.044715f * x3);
+                        float th = tanhf(inner);
+                        float gelu_grad = 0.5f * (1.0f + th) +
+                            0.5f * x * (1.0f - th * th) *
+                            0.7978845608f * (1.0f + 3.0f * 0.044715f * x * x);
+                        gx[i] = dout[i] * gelu_grad;
+                    }
+                    tape_acc_grad(e->parent1, gx, out_len);
+                }
+                free(gx);
+            }
+            break;
+        }
+        case AM_OP_DROPOUT: {
+            // y = x * mask (inverted). Mask encoded in output: 0 = dropped, kept = scaled.
+            // aux = p
+            if (e->parent1 >= 0) {
+                float p = e->aux;
+                float scale = (p > 0.0f && p < 1.0f) ? 1.0f / (1.0f - p) : 1.0f;
+                float* gx = (float*)calloc(out_len, sizeof(float));
+                if (gx) {
+                    for (int i = 0; i < out_len; i++) {
+                        // non-zero output => mask kept => grad passes through, scaled
+                        gx[i] = (e->output->data[i] != 0.0f) ? dout[i] * scale : 0.0f;
+                    }
+                    tape_acc_grad(e->parent1, gx, out_len);
+                }
+                free(gx);
+            }
+            break;
+        }
+        case AM_OP_LAYERNORM: {
+            // y = gamma * (x - mean) / sqrt(var + eps) + beta
+            // parent1 = x, parent2 = gamma (optional), parent3 = beta (optional)
+            if (e->parent1 >= 0) {
+                AM_TapeEntry* px = &g_tape.entries[e->parent1];
+                int n = out_len;
+                int has_gamma = (e->parent2 >= 0 && e->parent2 < g_tape.count);
+                int has_beta  = (e->parent3 >= 0 && e->parent3 < g_tape.count);
+                float* gamma_data = has_gamma ? g_tape.entries[e->parent2].output->data : NULL;
+
+                float mean = 0;
+                for (int i = 0; i < n; i++) mean += px->output->data[i];
+                mean /= n;
+                float var = 0;
+                for (int i = 0; i < n; i++) { float d = px->output->data[i] - mean; var += d * d; }
+                var /= n;
+                float inv_std = 1.0f / sqrtf(var + 1e-5f);
+
+                float* dout_eff = (float*)calloc(n, sizeof(float));
+                if (dout_eff) {
+                    for (int i = 0; i < n; i++)
+                        dout_eff[i] = has_gamma ? dout[i] * gamma_data[i] : dout[i];
+
+                    float sum_de = 0, sum_de_xhat = 0;
+                    for (int i = 0; i < n; i++) {
+                        float xhat = (px->output->data[i] - mean) * inv_std;
+                        sum_de += dout_eff[i];
+                        sum_de_xhat += dout_eff[i] * xhat;
+                    }
+                    float* gx = (float*)calloc(n, sizeof(float));
+                    if (gx) {
+                        for (int i = 0; i < n; i++) {
+                            float xhat = (px->output->data[i] - mean) * inv_std;
+                            gx[i] = inv_std * (dout_eff[i] - sum_de / n - xhat * sum_de_xhat / n);
+                        }
+                        tape_acc_grad(e->parent1, gx, n);
+                    }
+                    free(gx);
+
+                    // gamma grad: sum(dout * xhat) per element
+                    if (has_gamma) {
+                        float* gg = (float*)calloc(n, sizeof(float));
+                        if (gg) {
+                            for (int i = 0; i < n; i++) {
+                                float xhat = (px->output->data[i] - mean) * inv_std;
+                                gg[i] = dout[i] * xhat;
+                            }
+                            tape_acc_grad(e->parent2, gg, n);
+                            free(gg);
+                        }
+                    }
+                    // beta grad: dout directly
+                    if (has_beta) tape_acc_grad(e->parent3, dout, n);
+                    free(dout_eff);
+                }
+            }
+            break;
+        }
+        case AM_OP_SEQ_LAYERNORM: {
+            // layernorm per-position on T chunks of size D
+            // aux = T, aux2 = D
+            if (e->parent1 >= 0) {
+                AM_TapeEntry* px = &g_tape.entries[e->parent1];
+                int T = (int)e->aux;
+                int D = (int)e->aux2;
+                int has_gamma = (e->parent2 >= 0 && e->parent2 < g_tape.count);
+                int has_beta  = (e->parent3 >= 0 && e->parent3 < g_tape.count);
+                float* gamma_data = has_gamma ? g_tape.entries[e->parent2].output->data : NULL;
+
+                float* gx = (float*)calloc(T * D, sizeof(float));
+                float* gg = has_gamma ? (float*)calloc(D, sizeof(float)) : NULL;
+                float* gb = has_beta  ? (float*)calloc(D, sizeof(float)) : NULL;
+
+                if (gx) {
+                    for (int t = 0; t < T; t++) {
+                        float* x_t = px->output->data + t * D;
+                        float* dout_t = dout + t * D;
+                        float mean = 0;
+                        for (int d = 0; d < D; d++) mean += x_t[d];
+                        mean /= D;
+                        float var = 0;
+                        for (int d = 0; d < D; d++) { float dd = x_t[d] - mean; var += dd * dd; }
+                        var /= D;
+                        float inv_std = 1.0f / sqrtf(var + 1e-5f);
+
+                        float sum_de = 0, sum_de_xhat = 0;
+                        for (int d = 0; d < D; d++) {
+                            float de = has_gamma ? dout_t[d] * gamma_data[d] : dout_t[d];
+                            float xhat = (x_t[d] - mean) * inv_std;
+                            sum_de += de;
+                            sum_de_xhat += de * xhat;
+                        }
+                        for (int d = 0; d < D; d++) {
+                            float de = has_gamma ? dout_t[d] * gamma_data[d] : dout_t[d];
+                            float xhat = (x_t[d] - mean) * inv_std;
+                            gx[t * D + d] = inv_std * (de - sum_de / D - xhat * sum_de_xhat / D);
+                            if (gg) gg[d] += dout_t[d] * xhat;
+                            if (gb) gb[d] += dout_t[d];
+                        }
+                    }
+                    tape_acc_grad(e->parent1, gx, T * D);
+                    free(gx);
+                    if (gg) { tape_acc_grad(e->parent2, gg, D); free(gg); }
+                    if (gb) { tape_acc_grad(e->parent3, gb, D); free(gb); }
+                }
+            }
+            break;
+        }
         case AM_OP_CROSS_ENT: {
             // loss = -log(softmax(logits)[target])
             // d_logits = softmax(logits) - one_hot(target)
@@ -4690,6 +4838,157 @@ static AM_Array* aml_array_dispatch(AML_ExecCtx* ctx, const char* fname, char ar
             return out;
         }
         return NULL;
+    }
+
+    // gelu(x) — Gaussian Error Linear Unit (tanh approximation, Hendrycks)
+    if (strcasecmp(fname, "gelu") == 0 && nargs >= 1) {
+        AML_Var* vx = resolve_var_full(ctx, arg_strs[0]);
+        AM_Array* input_arr = NULL;
+        if (vx && vx->type == AML_TYPE_ARRAY && vx->array) {
+            input_arr = vx->array;
+        } else {
+            input_arr = aml_try_array_expr(ctx, arg_strs[0]);
+        }
+        if (input_arr) {
+            int n = input_arr->len;
+            AM_Array* out = am_array_new(n);
+            if (!out) return NULL;
+            for (int j = 0; j < n; j++) {
+                float x = input_arr->data[j];
+                float x3 = x * x * x;
+                float inner = 0.7978845608f * (x + 0.044715f * x3);
+                out->data[j] = 0.5f * x * (1.0f + tanhf(inner));
+            }
+            if (am_tape_is_active())
+                am_tape_record(out, AM_OP_GELU, tape_ensure_entry(input_arr), -1, 0);
+            return out;
+        }
+        return NULL;
+    }
+
+    // dropout(x, p) — inverted dropout. Uses am_is_training() to decide.
+    if (strcasecmp(fname, "dropout") == 0 && nargs >= 1) {
+        AML_Var* vx = resolve_var_full(ctx, arg_strs[0]);
+        AM_Array* input_arr = NULL;
+        if (vx && vx->type == AML_TYPE_ARRAY && vx->array) {
+            input_arr = vx->array;
+        } else {
+            input_arr = aml_try_array_expr(ctx, arg_strs[0]);
+        }
+        float p = 0.1f;
+        if (nargs >= 2) p = ctx_float(ctx, arg_strs[1]);
+        if (input_arr) {
+            int n = input_arr->len;
+            AM_Array* out = am_array_new(n);
+            if (!out) return NULL;
+            if (am_is_training() && p > 0.0f && p < 1.0f) {
+                static uint32_t drop_rng = 0xDE0B1EDEu;
+                float scale = 1.0f / (1.0f - p);
+                for (int j = 0; j < n; j++) {
+                    drop_rng ^= drop_rng << 13;
+                    drop_rng ^= drop_rng >> 17;
+                    drop_rng ^= drop_rng << 5;
+                    float r = (float)drop_rng / 4294967296.0f;
+                    out->data[j] = (r >= p) ? input_arr->data[j] * scale : 0.0f;
+                }
+            } else {
+                memcpy(out->data, input_arr->data, n * sizeof(float));
+            }
+            if (am_tape_is_active())
+                am_tape_record(out, AM_OP_DROPOUT, tape_ensure_entry(input_arr), -1, p);
+            return out;
+        }
+        return NULL;
+    }
+
+    // layernorm(x) or layernorm(x, gamma, beta)
+    if (strcasecmp(fname, "layernorm") == 0 && nargs >= 1) {
+        AML_Var* vx = resolve_var_full(ctx, arg_strs[0]);
+        if (!vx || vx->type != AML_TYPE_ARRAY || !vx->array) return NULL;
+        int n = vx->array->len;
+        AM_Array* out = am_array_new(n);
+        if (!out) return NULL;
+
+        float mean = 0;
+        for (int i = 0; i < n; i++) mean += vx->array->data[i];
+        mean /= n;
+        float var = 0;
+        for (int i = 0; i < n; i++) {
+            float d = vx->array->data[i] - mean;
+            var += d * d;
+        }
+        var /= n;
+        float inv_std = 1.0f / sqrtf(var + 1e-5f);
+
+        for (int i = 0; i < n; i++)
+            out->data[i] = (vx->array->data[i] - mean) * inv_std;
+
+        int gamma_idx = -1, beta_idx = -1;
+        if (nargs >= 2) {
+            AML_Var* vg = resolve_var_full(ctx, arg_strs[1]);
+            if (vg && vg->type == AML_TYPE_ARRAY && vg->array) {
+                int gn = vg->array->len < n ? vg->array->len : n;
+                for (int i = 0; i < gn; i++) out->data[i] *= vg->array->data[i];
+                gamma_idx = tape_ensure_entry(vg->array);
+            }
+        }
+        if (nargs >= 3) {
+            AML_Var* vb = resolve_var_full(ctx, arg_strs[2]);
+            if (vb && vb->type == AML_TYPE_ARRAY && vb->array) {
+                int bn = vb->array->len < n ? vb->array->len : n;
+                for (int i = 0; i < bn; i++) out->data[i] += vb->array->data[i];
+                beta_idx = tape_ensure_entry(vb->array);
+            }
+        }
+        if (am_tape_is_active())
+            am_tape_record3(out, AM_OP_LAYERNORM,
+                            tape_ensure_entry(vx->array), gamma_idx, beta_idx, 0, 0);
+        return out;
+    }
+
+    // seq_layernorm(x, gamma, beta, T, D) — layernorm per T positions of size D
+    if (strcasecmp(fname, "seq_layernorm") == 0 && nargs >= 5) {
+        AML_Var* vx = resolve_var_full(ctx, arg_strs[0]);
+        if (!vx || vx->type != AML_TYPE_ARRAY || !vx->array) return NULL;
+        int T = (int)ctx_float(ctx, arg_strs[3]);
+        int D = (int)ctx_float(ctx, arg_strs[4]);
+        if (T <= 0 || D <= 0 || T * D > vx->array->len) return NULL;
+        AM_Array* out = am_array_new(T * D);
+        if (!out) return NULL;
+
+        for (int t = 0; t < T; t++) {
+            float* x_t = vx->array->data + t * D;
+            float* o_t = out->data + t * D;
+            float mean = 0;
+            for (int d = 0; d < D; d++) mean += x_t[d];
+            mean /= D;
+            float var = 0;
+            for (int d = 0; d < D; d++) { float dd = x_t[d] - mean; var += dd * dd; }
+            var /= D;
+            float inv_std = 1.0f / sqrtf(var + 1e-5f);
+            for (int d = 0; d < D; d++) o_t[d] = (x_t[d] - mean) * inv_std;
+        }
+
+        int gamma_idx = -1, beta_idx = -1;
+        AML_Var* vg = resolve_var_full(ctx, arg_strs[1]);
+        if (vg && vg->type == AML_TYPE_ARRAY && vg->array && vg->array->len >= D) {
+            for (int t = 0; t < T; t++)
+                for (int d = 0; d < D; d++)
+                    out->data[t * D + d] *= vg->array->data[d];
+            gamma_idx = tape_ensure_entry(vg->array);
+        }
+        AML_Var* vb = resolve_var_full(ctx, arg_strs[2]);
+        if (vb && vb->type == AML_TYPE_ARRAY && vb->array && vb->array->len >= D) {
+            for (int t = 0; t < T; t++)
+                for (int d = 0; d < D; d++)
+                    out->data[t * D + d] += vb->array->data[d];
+            beta_idx = tape_ensure_entry(vb->array);
+        }
+        if (am_tape_is_active())
+            am_tape_record3(out, AM_OP_SEQ_LAYERNORM,
+                            tape_ensure_entry(vx->array), gamma_idx, beta_idx,
+                            (float)T, (float)D);
+        return out;
     }
 
     // relu(x) — ReLU activation

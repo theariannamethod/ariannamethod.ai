@@ -577,6 +577,10 @@ const AM_Pipe* am_pipe_get(int idx);
 #define AM_OP_CAUSAL_ATTN   14  // causal self-attention over T positions
 #define AM_OP_SEQ_CROSSENT  15  // cross-entropy over T positions
 #define AM_OP_MH_CAUSAL_ATTN 16 // multi-head causal self-attention
+#define AM_OP_GELU          17  // y = 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+#define AM_OP_DROPOUT       18  // y = x * mask (inverted dropout, train-mode only)
+#define AM_OP_LAYERNORM     19  // y = gamma*(x-mean)/sqrt(var+eps) + beta
+#define AM_OP_SEQ_LAYERNORM 20  // layernorm per T positions of size D
 
 typedef struct {
     AM_Array* output;       // forward result (owned by tape)
