@@ -1351,6 +1351,12 @@ void am_tape_backward(int loss_idx) {
                     break;
                 }
 #endif
+                /* CPU fallback: parents may be GPU-fresh with stale CPU mirror.
+                 * Mirrors notorch.c NT_OP_MUL fix 2026-05-11. */
+#ifdef USE_CUDA
+                ensure_cpu(pa->output);
+                ensure_cpu(pb->output);
+#endif
                 float* ga = (float*)calloc(out_len, sizeof(float));
                 float* gb = (float*)calloc(out_len, sizeof(float));
                 if (ga && gb) {
@@ -1382,6 +1388,10 @@ void am_tape_backward(int loss_idx) {
             if (e->parent1 >= 0 && e->parent2 >= 0) {
                 AM_TapeEntry* pw = &g_tape.entries[e->parent1]; // W
                 AM_TapeEntry* px = &g_tape.entries[e->parent2]; // x
+#ifdef USE_CUDA
+                ensure_cpu(pw->output);
+                ensure_cpu(px->output);
+#endif
                 int rows = pw->output->rows;
                 int cols = pw->output->cols;
                 if (rows > 0 && cols > 0) {
@@ -1423,6 +1433,10 @@ void am_tape_backward(int loss_idx) {
                     free(gx);
                     break;
                 }
+                /* CPU fallback: GPU branch above already returned via break if
+                 * the GPU path fired. Here parent->output->data may be the
+                 * stale CPU mirror of a GPU-resident forward. */
+                ensure_cpu(px->output);
 #endif
                 float* gx = (float*)calloc(out_len, sizeof(float));
                 if (gx) {
@@ -1441,6 +1455,9 @@ void am_tape_backward(int loss_idx) {
             // y = softmax(x) → Jacobian: diag(y) - y⊗y
             // dsoftmax_i = y_i * (dout_i - sum(dout * y))
             if (e->parent1 >= 0) {
+#ifdef USE_CUDA
+                ensure_cpu(e->output);
+#endif
                 float dot_dy = 0;
                 for (int i = 0; i < out_len; i++)
                     dot_dy += dout[i] * e->output->data[i];
@@ -1459,6 +1476,9 @@ void am_tape_backward(int loss_idx) {
             // Simplified gradient: similar to LayerNorm but without mean subtraction
             if (e->parent1 >= 0) {
                 AM_TapeEntry* px = &g_tape.entries[e->parent1];
+#ifdef USE_CUDA
+                ensure_cpu(px->output);
+#endif
                 int n = out_len;
                 float ss = 0;
                 for (int i = 0; i < n; i++) ss += px->output->data[i] * px->output->data[i];
@@ -1481,6 +1501,9 @@ void am_tape_backward(int loss_idx) {
             // y = 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
             if (e->parent1 >= 0) {
                 AM_TapeEntry* px = &g_tape.entries[e->parent1];
+#ifdef USE_CUDA
+                ensure_cpu(px->output);
+#endif
                 float* gx = (float*)calloc(out_len, sizeof(float));
                 if (gx) {
                     for (int i = 0; i < out_len; i++) {
@@ -1503,6 +1526,9 @@ void am_tape_backward(int loss_idx) {
             // y = x * mask (inverted). Mask encoded in output: 0 = dropped, kept = scaled.
             // aux = p
             if (e->parent1 >= 0) {
+#ifdef USE_CUDA
+                ensure_cpu(e->output);
+#endif
                 float p = e->aux;
                 float scale = (p > 0.0f && p < 1.0f) ? 1.0f / (1.0f - p) : 1.0f;
                 float* gx = (float*)calloc(out_len, sizeof(float));
@@ -1525,6 +1551,10 @@ void am_tape_backward(int loss_idx) {
                 int n = out_len;
                 int has_gamma = (e->parent2 >= 0 && e->parent2 < g_tape.count);
                 int has_beta  = (e->parent3 >= 0 && e->parent3 < g_tape.count);
+#ifdef USE_CUDA
+                ensure_cpu(px->output);
+                if (has_gamma) ensure_cpu(g_tape.entries[e->parent2].output);
+#endif
                 float* gamma_data = has_gamma ? g_tape.entries[e->parent2].output->data : NULL;
 
                 float mean = 0;
@@ -1584,6 +1614,10 @@ void am_tape_backward(int loss_idx) {
                 int D = (int)e->aux2;
                 int has_gamma = (e->parent2 >= 0 && e->parent2 < g_tape.count);
                 int has_beta  = (e->parent3 >= 0 && e->parent3 < g_tape.count);
+#ifdef USE_CUDA
+                ensure_cpu(px->output);
+                if (has_gamma) ensure_cpu(g_tape.entries[e->parent2].output);
+#endif
                 float* gamma_data = has_gamma ? g_tape.entries[e->parent2].output->data : NULL;
 
                 float* gx = (float*)calloc(T * D, sizeof(float));
@@ -1630,6 +1664,9 @@ void am_tape_backward(int loss_idx) {
             // d_logits = softmax(logits) - one_hot(target)
             if (e->parent1 >= 0) {
                 AM_TapeEntry* pl = &g_tape.entries[e->parent1]; // logits
+#ifdef USE_CUDA
+                ensure_cpu(pl->output);
+#endif
                 int n = pl->output->len;
                 int target = (int)e->aux;
                 // Compute softmax of logits
@@ -1682,6 +1719,9 @@ void am_tape_backward(int loss_idx) {
                 AM_TapeEntry* pwte = &g_tape.entries[e->parent1];
                 AM_TapeEntry* pwpe = &g_tape.entries[e->parent2];
                 AM_TapeEntry* ptok = &g_tape.entries[e->parent3]; // tokens array
+#ifdef USE_CUDA
+                ensure_cpu(ptok->output);
+#endif
                 int T = (int)e->aux;
                 int D = (int)e->aux2;
                 float* dwte = (float*)calloc(pwte->output->len, sizeof(float));
@@ -1754,6 +1794,9 @@ void am_tape_backward(int loss_idx) {
                         }
                     }
 #elif defined(USE_BLAS)
+                    /* BLAS path is CPU-only; if parents were last touched on GPU,
+                     * Wd/Xd point to stale CPU mirrors. No-op when no CUDA build. */
+                    /* (no ensure_cpu here — !defined(USE_CUDA) means no GPU mirror) */
                     // BLAS backward: dX(T,in) = dout(T,out) x W(out,in)
                     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                                 T, in_d, out_d,
@@ -1765,6 +1808,7 @@ void am_tape_backward(int loss_idx) {
                                 1.0f, dout, out_d, Xd, in_d,
                                 0.0f, dw, in_d);
 #else
+                    /* Plain CPU path — same comment: no GPU mirror to sync. */
                     // dX: each position t independent → parallelize over t
                     #ifdef _OPENMP
                     #pragma omp parallel for schedule(static) if(T > 16)
@@ -1811,6 +1855,8 @@ void am_tape_backward(int loss_idx) {
                     free(gx);
                     break;
                 }
+                /* CPU fallback under USE_CUDA: sync parent before reading. */
+                ensure_cpu(px->output);
 #endif
                 int T = (int)e->aux;
                 int D = (int)e->aux2;
@@ -1846,6 +1892,11 @@ void am_tape_backward(int loss_idx) {
                 AM_TapeEntry* pq = &g_tape.entries[e->parent1]; // Q
                 AM_TapeEntry* pk = &g_tape.entries[e->parent2]; // K
                 AM_TapeEntry* pv = &g_tape.entries[e->parent3]; // V
+#ifdef USE_CUDA
+                ensure_cpu(pq->output);
+                ensure_cpu(pk->output);
+                ensure_cpu(pv->output);
+#endif
                 int T = (int)e->aux;
                 int D = (int)e->aux2;
                 float sc = 1.0f / sqrtf((float)D);
@@ -1915,6 +1966,11 @@ void am_tape_backward(int loss_idx) {
                 AM_TapeEntry* pq = &g_tape.entries[e->parent1]; // Q
                 AM_TapeEntry* pk = &g_tape.entries[e->parent2]; // K
                 AM_TapeEntry* pv = &g_tape.entries[e->parent3]; // V
+#ifdef USE_CUDA
+                ensure_cpu(pq->output);
+                ensure_cpu(pk->output);
+                ensure_cpu(pv->output);
+#endif
                 int T = (int)e->aux;
                 int head_dim = (int)e->aux2;
                 int D = e->output->len / T;
@@ -1982,6 +2038,10 @@ void am_tape_backward(int loss_idx) {
             if (e->parent1 >= 0) {
                 AM_TapeEntry* pl = &g_tape.entries[e->parent1]; // logits
                 AM_TapeEntry* pt = &g_tape.entries[e->parent2]; // targets
+#ifdef USE_CUDA
+                ensure_cpu(pl->output);
+                if (pt) ensure_cpu(pt->output);
+#endif
                 int T = (int)e->aux;
                 int V = (int)e->aux2;
                 float* dl = (float*)calloc(T * V, sizeof(float));
