@@ -22,3 +22,4 @@ janus_ckpt_step*.bin
 *.synctex.gz
 *.fdb_latexmk
 *.fls
+PROJECT_LOG.md
