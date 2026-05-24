@@ -118,6 +118,7 @@ typedef struct {
 typedef struct {
   // PROPHECY PHYSICS
   int   prophecy;           // horizon: steps ahead (1..64)
+  int   field_enabled;      // FIELD ON/OFF — gate field overlay on logits (default 1)
   float destiny;            // bias toward most probable path (0..1)
   float wormhole;           // probability of spacetime skip (0..1)
   float calendar_drift;     // hebrew-gregorian drift (default 11.0)

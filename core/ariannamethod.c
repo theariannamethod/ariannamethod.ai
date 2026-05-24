@@ -504,6 +504,7 @@ void am_init(void) {
 
   // prophecy physics defaults
   G.prophecy = 7;
+  G.field_enabled = 1;   // FIELD overlay ON by default
   G.destiny = 0.35f;
   G.wormhole = 0.02f;  // 2% base, increases with prophecy debt
   G.calendar_drift = 11.0f;
@@ -3447,6 +3448,17 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
     }
     else if (!strcmp(t, "DESTINY")) {
       G.destiny = clamp01(ctx_float(ctx, arg));
+    }
+    else if (!strcmp(t, "FIELD")) {
+      // FIELD ON|OFF — gate the field overlay on logits
+      char argup[8] = {0};
+      snprintf(argup, sizeof(argup), "%.7s", arg);
+      upcase(argup);
+      G.field_enabled = strcmp(argup, "OFF") ? 1 : 0;
+    }
+    else if (!strcmp(t, "RESONANCE")) {
+      // RESONANCE <float> — set current field resonance (0..1)
+      G.resonance = clamp01(ctx_float(ctx, arg));
     }
     else if (!strcmp(t, "WORMHOLE")) {
       G.wormhole = clamp01(ctx_float(ctx, arg));
@@ -6733,6 +6745,7 @@ float am_compute_prophecy_debt(const float* logits, int chosen, int n) {
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n) {
     if (!logits || n <= 0) return;
+    if (!G.field_enabled) return;   // FIELD OFF — overlay disabled
     am_apply_gamma_to_logits(logits, n);  // personality first
     am_apply_destiny_to_logits(logits, n);
     am_apply_suffering_to_logits(logits, n);
