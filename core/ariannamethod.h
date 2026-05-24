@@ -423,6 +423,10 @@ void am_apply_delta(float* out, const float* A, const float* B,
 // Compute prophecy debt from chosen token (retroactive)
 float am_compute_prophecy_debt(const float* logits, int chosen, int n);
 
+// Accrue per-token prophecy debt into the field (Fix D — inference choices feed
+// debt; system minimizes via decay/velocity DOWN, rejections feed dark matter).
+void am_register_prophecy_debt(float debt);
+
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n);
 

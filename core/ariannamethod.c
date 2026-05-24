@@ -6742,6 +6742,17 @@ float am_compute_prophecy_debt(const float* logits, int chosen, int n) {
     return diff > 0.0f ? diff / (diff + 1.0f) : 0.0f;
 }
 
+// Accrue per-token prophecy debt into the field (Fix D). A chosen token that
+// deviates from the peak is an unfulfilled prophecy → debt grows. The system
+// keeps debt minimal via decay (debt_decay) + velocity DOWN / BACKWARD recovery;
+// rejections feed dark-matter gravity. Without this, inference choices were
+// computed (am_compute_prophecy_debt) and discarded — never reached the field.
+void am_register_prophecy_debt(float debt) {
+    if (debt <= 0.0f) return;
+    G.debt += debt;
+    if (G.debt > 100.0f) G.debt = 100.0f;
+}
+
 // Full pipeline: apply all field effects to logits
 void am_apply_field_to_logits(float* logits, int n) {
     if (!logits || n <= 0) return;
