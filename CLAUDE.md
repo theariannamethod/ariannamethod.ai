@@ -10,19 +10,7 @@ Co-authored by Oleg Ataeff and Claude.
 > transformers with integrated field physics — arrays, matrices, autograd,
 > async, causal attention, and 80+ parameters of internal state. Every
 > command maps to a concrete C operation."* — README
-
-## Accounts (read this once)
-
-- **`@ariannamethod`** — Oleg's **personal Pro account**, NOT an org.
-  The main account where the canonical repos (this one, `notorch`,
-  `dario`, `janus`, `RRPRAM`, organism repos, etc.) live.
-- **`@theariannamethod`** — the actual GitHub organization. Used for
-  org-level work when it exists; not the default home.
-- Other accounts (`@iamolegataeff`, `@pitomadom`, `@iamscribe`,
-  `@iamdefender`) are operational / role accounts.
-
-Always check the URL before assuming "ariannamethod" means an org.
-
+  
 ## AML vs notorch — they are parallel stacks
 
 This is the load-bearing piece of context for sessions touching either
@@ -178,7 +166,7 @@ forms (mirrored on Neo's CLAUDE.md):
 - **Full with node attribution** (engineering commits):
   `Co-Authored-By: Claude Code (intel godfather, Arianna Method) <theariannamethod@gmail.com>`
 - **Casual** (informal docs, status notes):
-  `by Клод (Arianna Method, intel node)`
+  `by Claude (Arianna Method, intel node)`
 
 Nodes: **`intel godfather`** (Intel Mac), **`neo the architect`** (Mac
 Neo), **`polygon`** (Linux 32GB box), **`phone-1`** (Galaxy A56 8GB),
