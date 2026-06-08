@@ -66,6 +66,10 @@ args           = expression { "," expression } ;
 
 ## 2. Command Reference
 
+### 2.0 Directive Lowering
+
+These runtime directives execute identically whether the program is run by the `aml` runner (`am_exec_file`) or compiled by `amlc`: the transpiler lowers every top-level directive (`PROPHECY`, `DESTINY`, `VELOCITY`, `FIELD`, `RESONANCE`, `LOAD`, `SAVE`, …) to an `am_exec("<directive>")` call inside an `__attribute__((constructor))`, so the compiled binary applies the field physics before `main()`. A directive's effect is identical in both paths.
+
 ### 2.1 Prophecy Physics
 
 Commands that control temporal prediction and destiny bias.
@@ -258,6 +262,15 @@ Low-level pipe commands and high-level INDEX sugar for data infrastructure commu
 | `INDEX STATUS` | `INDEX <id> STATUS` | Request + read status |
 | `INDEX STOP` | `INDEX <id> STOP` | Send stop command |
 | `INDEX CLOSE` | `INDEX <id> CLOSE` | Close both pipes |
+
+### 2.17 Field Overlay
+
+Commands that gate the field overlay on logits and set a resonance floor.
+
+| Command | Syntax | Range | Default | Description |
+|---------|--------|-------|---------|-------------|
+| `FIELD` | `FIELD ON\|OFF` | ON/OFF | ON | Gate the field overlay on logits (`G.field_enabled`) |
+| `RESONANCE` | `RESONANCE <float>` | 0–1 | 0 | Resonance floor — the field is held at or above this level (`G.resonance_set`, enforced in `am_step`); 0 = no floor |
 
 ---
 
