@@ -150,6 +150,7 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
     char line[MAX_LINE];
     size_t cap = 4096;
     char *buf = malloc(cap);
+    if (!buf) return 1;   /* R-4: was unchecked */
     size_t len = 0;
     int depth = 1;
     int in_block_comment = 0;
@@ -190,7 +191,9 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
         if (emit_len > 0) {
             if (len + emit_len + 1 > cap) {
                 while (len + emit_len + 1 > cap) cap *= 2;
-                buf = realloc(buf, cap);
+                char *nb = realloc(buf, cap);   /* R-4: was unchecked */
+                if (!nb) { free(buf); return 1; }
+                buf = nb;
             }
             memcpy(buf + len, chunk, emit_len);
             len += emit_len;
@@ -198,7 +201,7 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
 
         if (closed) {
             if (len > 0 && buf[len-1] != '\n') {
-                if (len + 2 > cap) { cap += 2; buf = realloc(buf, cap); }
+                if (len + 2 > cap) { cap += 2; char *nb = realloc(buf, cap); if (!nb) { free(buf); return 1; } buf = nb; }
                 buf[len++] = '\n';
             }
             buf[len] = 0;
@@ -273,6 +276,9 @@ static int parse_aml(const char *path, Parsed *out) {
             while (*q && *q != ' ' && *q != '\t' && *q != '{' && *q != '\n' &&
                    ni < MAX_NAME - 1)
                 name[ni++] = *q++;
+            if (ni == MAX_NAME - 1 && *q && *q != ' ' && *q != '\t' && *q != '{' && *q != '\n')
+                fprintf(stderr, "amlc: line %d: BLOOD COMPILE name truncated at %d chars\n",
+                        line_no, MAX_NAME - 1);   /* R-4 */
 
             if (out->n_compile >= MAX_BLOCKS) {
                 fprintf(stderr, "amlc: error: too many BLOOD COMPILE blocks (max %d)\n",
@@ -298,6 +304,11 @@ static int parse_aml(const char *path, Parsed *out) {
         }
 
         if (starts_with(p, "BLOOD MAIN")) {
+            if (out->has_main) {   /* R-4: a second BLOOD MAIN silently overwrote + leaked the first */
+                fprintf(stderr, "amlc: line %d: duplicate BLOOD MAIN\n", line_no);
+                fclose(f);
+                return 1;
+            }
             const char *q = p + 10;
             const char *main_tail = NULL;
             if (consume_open_brace(f, &line_no, q, "BLOOD MAIN", "", &main_tail) != 0) {

@@ -117,5 +117,22 @@ else
     exit 1
 fi
 
+# ── A-5 conformance: ECHO logs (not #include); BLOOD INCLUDE injects #include ──
+#    (Mythos audit A-5: ECHO used to be lowered to a C #include; the spec defines
+#     it as console logging, and BLOOD INCLUDE is the explicit header directive.)
+cat > a5.aml <<'EOF'
+ECHO startup message
+BLOOD INCLUDE "stdio.h"
+EOF
+"$OLDPWD/tools/amlc" --emit-c a5.aml >a5.c 2>/dev/null || true
+if grep -q 'am_exec("ECHO startup message")' a5.c \
+   && grep -q '#include "stdio.h"' a5.c \
+   && ! grep -q '#include "ECHO' a5.c; then
+    echo "  PASS [A-5]: ECHO → am_exec (log); BLOOD INCLUDE → #include"
+else
+    echo "  FAIL [A-5]: ECHO/BLOOD INCLUDE lowering wrong"
+    exit 1
+fi
+
 echo
 echo "amlc OK"
