@@ -6115,6 +6115,45 @@ static int aml_exec_line(AML_ExecCtx* ctx, int idx) {
         return idx + 1;  // macro not found — ignore
     }
 
+    // --- A-3b: multi-line BLOOD COMPILE — gather the body across lines ---
+    // aml_exec_level0's one-line handler only compiles when '{' and '}' are on the
+    // same line; a multi-line block otherwise falls through here and its C body
+    // lines get dispatched as field commands (e.g. "PAIN 0.9;" would set pain).
+    // Detect an unbalanced opener, gather the body until the braces balance,
+    // compile it, and resume past the consumed lines so the body never reaches the
+    // dispatcher. (One-line blocks have net==0 and stay with aml_exec_level0.)
+    if (strncasecmp(text, "BLOOD COMPILE", 13) == 0) {
+        const char* open = strchr(text, '{');
+        int net = 0;
+        if (open) for (const char* c = text; *c; c++) net += (*c == '{') - (*c == '}');
+        if (open && net > 0) {
+            char bname[AM_BLOOD_MAX_NAME] = {0};
+            sscanf(text + 13, " %63s", bname);
+            size_t cap = 512, len = 0;
+            char* body = (char*)malloc(cap);
+            if (!body) return idx + 1;
+            int depth = 0, j = idx, done = 0;
+            const char* chunk = open;
+            while (j < ctx->nlines && !done) {
+                for (const char* c = chunk; *c; c++) {
+                    if (*c == '{') { if (++depth == 1) continue; }       // skip the opening '{'
+                    else if (*c == '}') { if (--depth == 0) { done = 1; break; } }
+                    if (len + 2 > cap) { char* nb = (char*)realloc(body, cap * 2); if (!nb) { done = 1; break; } body = nb; cap *= 2; }
+                    body[len++] = *c;
+                }
+                if (done) break;
+                if (len + 2 > cap) { char* nb = (char*)realloc(body, cap * 2); if (!nb) break; body = nb; cap *= 2; }
+                body[len++] = '\n';
+                if (++j < ctx->nlines) chunk = ctx->lines[j].text;
+            }
+            body[len] = 0;
+            if (am_blood_compile(bname, body) < 0)
+                set_error_at(ctx, ctx->lines[idx].lineno, "blood: compilation failed");
+            free(body);
+            return (j < ctx->nlines) ? j + 1 : ctx->nlines;
+        }
+    }
+
     // --- Level 0 fallback: split CMD ARG, dispatch ---
     {
         char linebuf[AML_MAX_LINE_LEN];
