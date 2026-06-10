@@ -134,7 +134,8 @@ static int track_braces(const char *buf, size_t n, int *depth,
  * the matching '}' is found; any trailing bytes on that line after the
  * closing brace are pushed back as a line comment (rare in practice). */
 static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
-                           const char *name, char **code_out, size_t *len_out) {
+                           const char *name, const char *initial,
+                           char **code_out, size_t *len_out) {
     char line[MAX_LINE];
     size_t cap = 4096;
     char *buf = malloc(cap);
@@ -142,23 +143,34 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
     int depth = 1;
     int in_block_comment = 0;
 
-    while (fgets(line, sizeof(line), f)) {
-        (*line_no)++;
-        size_t llen = strlen(line);
+    /* A-3: a one-line block (BLOOD COMPILE foo { ... }) carries its whole body
+     * on the opener line after the '{'. The caller passes that tail as `initial`;
+     * process it before reading further lines. Without this the body is dropped
+     * and we scan following lines for a '}' that isn't there — unexpected EOF. */
+    const char *seed = (initial && *initial) ? initial : NULL;
+
+    for (;;) {
+        const char *chunk;
+        if (seed) {
+            chunk = seed;
+            seed = NULL;
+        } else {
+            if (!fgets(line, sizeof(line), f)) break;
+            (*line_no)++;
+            chunk = line;
+        }
+        size_t llen = strlen(chunk);
         size_t closer_off = 0;
-        int closed = track_braces(line, llen, &depth, &in_block_comment, &closer_off);
+        int closed = track_braces(chunk, llen, &depth, &in_block_comment, &closer_off);
         size_t take = closed ? closer_off : llen;
 
         /* Drop the closing '}' itself from emitted body if it sits at the
          * very end of the captured chunk (no preceding non-whitespace). */
         size_t emit_len = take;
         if (closed) {
-            /* Remove final '}' and any preceding whitespace on its line so
-             * the emitted C is clean. We trim back from take to the start
-             * of the line or to the last non-whitespace byte. */
             size_t k = take;
-            if (k > 0 && line[k-1] == '}') k--;
-            while (k > 0 && (line[k-1] == ' ' || line[k-1] == '\t')) k--;
+            if (k > 0 && chunk[k-1] == '}') k--;
+            while (k > 0 && (chunk[k-1] == ' ' || chunk[k-1] == '\t')) k--;
             emit_len = k;
         }
 
@@ -167,13 +179,11 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
                 while (len + emit_len + 1 > cap) cap *= 2;
                 buf = realloc(buf, cap);
             }
-            memcpy(buf + len, line, emit_len);
+            memcpy(buf + len, chunk, emit_len);
             len += emit_len;
         }
 
         if (closed) {
-            /* If there's content after closer (rare) — silently ignore;
-             * AML convention puts only whitespace/newline after BLOOD '}'. */
             if (len > 0 && buf[len-1] != '\n') {
                 if (len + 2 > cap) { cap += 2; buf = realloc(buf, cap); }
                 buf[len++] = '\n';
@@ -193,9 +203,14 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
 /* If the opener line already contains '{', advance past it; otherwise
  * read the next non-blank line and require it to be '{'. */
 static int consume_open_brace(FILE *f, int *line_no, const char *after,
-                              const char *opener_kind, const char *name) {
+                              const char *opener_kind, const char *name,
+                              const char **tail_out) {
+    /* A-3: when '{' is on the opener line, hand the bytes after it back so the
+     * caller can feed a one-line block's body to read_brace_body. When '{' is
+     * on its own later line there is no meaningful tail (NULL). */
+    *tail_out = NULL;
     const char *brace = strchr(after, '{');
-    if (brace) return 0;
+    if (brace) { *tail_out = brace + 1; return 0; }
 
     char line[MAX_LINE];
     while (fgets(line, sizeof(line), f)) {
@@ -252,7 +267,8 @@ static int parse_aml(const char *path, Parsed *out) {
                 fclose(f);
                 return 1;
             }
-            if (consume_open_brace(f, &line_no, q, "BLOOD COMPILE", name) != 0) {
+            const char *body_tail = NULL;
+            if (consume_open_brace(f, &line_no, q, "BLOOD COMPILE", name, &body_tail) != 0) {
                 fclose(f);
                 return 1;
             }
@@ -260,7 +276,7 @@ static int parse_aml(const char *path, Parsed *out) {
             strncpy(b->name, name, MAX_NAME - 1);
             b->name[MAX_NAME - 1] = 0;
             b->start_line = line_no;
-            if (read_brace_body(f, &line_no, "BLOOD COMPILE", name,
+            if (read_brace_body(f, &line_no, "BLOOD COMPILE", name, body_tail,
                                 &b->code, &b->code_len) != 0) {
                 fclose(f);
                 return 1;
@@ -270,13 +286,14 @@ static int parse_aml(const char *path, Parsed *out) {
 
         if (starts_with(p, "BLOOD MAIN")) {
             const char *q = p + 10;
-            if (consume_open_brace(f, &line_no, q, "BLOOD MAIN", "") != 0) {
+            const char *main_tail = NULL;
+            if (consume_open_brace(f, &line_no, q, "BLOOD MAIN", "", &main_tail) != 0) {
                 fclose(f);
                 return 1;
             }
             out->main_block.start_line = line_no;
             strncpy(out->main_block.name, "MAIN", MAX_NAME - 1);
-            if (read_brace_body(f, &line_no, "BLOOD MAIN", "",
+            if (read_brace_body(f, &line_no, "BLOOD MAIN", "", main_tail,
                                 &out->main_block.code,
                                 &out->main_block.code_len) != 0) {
                 fclose(f);
