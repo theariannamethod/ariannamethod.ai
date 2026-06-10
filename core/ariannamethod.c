@@ -3539,11 +3539,13 @@ static void aml_exec_level0(const char* cmd, const char* arg, AML_ExecCtx* ctx, 
       G.destiny = clamp01(ctx_float(ctx, arg));
     }
     else if (!strcmp(t, "FIELD")) {
-      // FIELD ON|OFF — gate the field overlay on logits
+      // FIELD ON|OFF — gate the field overlay on logits. A-7: honour the §1.1
+      // boolean-false set so FIELD 0 / FALSE / NO also disable (was: only "OFF").
       char argup[8] = {0};
       snprintf(argup, sizeof(argup), "%.7s", arg);
       upcase(argup);
-      G.field_enabled = strcmp(argup, "OFF") ? 1 : 0;
+      G.field_enabled = (strcmp(argup, "OFF") && strcmp(argup, "0") &&
+                         strcmp(argup, "FALSE") && strcmp(argup, "NO")) ? 1 : 0;
     }
     else if (!strcmp(t, "RESONANCE")) {
       // RESONANCE <float> — set a resonance FLOOR: the field is held at or above
@@ -4627,7 +4629,11 @@ static int aml_preprocess(const char* script, AML_Line* lines, int max_lines) {
         if (len == 0) { lineno++; continue; }
 
         // store
-        if (len >= AML_MAX_LINE_LEN) len = AML_MAX_LINE_LEN - 1;
+        if (len >= AML_MAX_LINE_LEN) {
+            fprintf(stderr, "aml: line %d truncated at %d bytes (AML_MAX_LINE_LEN)\n",
+                    lineno, AML_MAX_LINE_LEN - 1);   // R-2: loud, was a silent drop
+            len = AML_MAX_LINE_LEN - 1;
+        }
         memcpy(lines[count].text, start, len);
         lines[count].text[len] = 0;
         lines[count].indent = indent;

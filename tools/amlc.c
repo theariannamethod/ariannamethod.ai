@@ -84,12 +84,16 @@ static void rtrim(char *s) {
  * *depth in place. Returns 1 if depth reached 0 within this chunk, with
  * *closer_off set to the byte index just past the closing '}'. */
 static int track_braces(const char *buf, size_t n, int *depth,
-                        int *in_block_comment, size_t *closer_off) {
+                        int *in_block_comment, int *in_line_cmt_io,
+                        int *in_str_dq_io, int *in_str_sq_io, size_t *closer_off) {
     int bc = *in_block_comment;
     int d  = *depth;
-    int in_line_cmt = 0;
-    int in_str_dq   = 0;
-    int in_str_sq   = 0;
+    /* R-1: persist line-comment and string state across fgets chunks. A logical
+     * line longer than MAX_LINE is split mid-state; without carrying these, a '}'
+     * inside a string/`//` comment past the boundary closed the block early. */
+    int in_line_cmt = *in_line_cmt_io;
+    int in_str_dq   = *in_str_dq_io;
+    int in_str_sq   = *in_str_sq_io;
 
     for (size_t i = 0; i < n; i++) {
         char c  = buf[i];
@@ -130,6 +134,9 @@ static int track_braces(const char *buf, size_t n, int *depth,
     }
     *depth = d;
     *in_block_comment = bc;
+    *in_line_cmt_io = in_line_cmt;
+    *in_str_dq_io = in_str_dq;
+    *in_str_sq_io = in_str_sq;
     return 0;
 }
 
@@ -146,6 +153,7 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
     size_t len = 0;
     int depth = 1;
     int in_block_comment = 0;
+    int in_line_cmt = 0, in_str_dq = 0, in_str_sq = 0;   /* R-1: persist across chunks */
 
     /* A-3: a one-line block (BLOOD COMPILE foo { ... }) carries its whole body
      * on the opener line after the '{'. The caller passes that tail as `initial`;
@@ -165,7 +173,8 @@ static int read_brace_body(FILE *f, int *line_no, const char *opener_kind,
         }
         size_t llen = strlen(chunk);
         size_t closer_off = 0;
-        int closed = track_braces(chunk, llen, &depth, &in_block_comment, &closer_off);
+        int closed = track_braces(chunk, llen, &depth, &in_block_comment,
+                                  &in_line_cmt, &in_str_dq, &in_str_sq, &closer_off);
         size_t take = closed ? closer_off : llen;
 
         /* Drop the closing '}' itself from emitted body if it sits at the
@@ -568,6 +577,15 @@ int main(int argc, char **argv) {
     fclose(fp);
     fprintf(stderr, "amlc: generated %d lines of C (%ld bytes)\n", lines, fsz);
 
+    /* Priority-1b: top-level directives emit a constructor calling am_exec, which
+     * lives in libaml; --no-accel skips libaml, so the link fails with an opaque
+     * "undefined _am_exec". Refuse early with a clear message instead. */
+    if (no_accel && p.n_directives > 0) {
+        fprintf(stderr, "amlc: %d top-level directive(s) need am_exec from libaml, "
+                "but --no-accel skips it — rerun without --no-accel.\n", p.n_directives);
+        return 1;
+    }
+
     char cmd[8192];
     const char *PFX = prefix_dir();
     char libaml[1024], libnotorch[1024], inc_dir[1024];
@@ -580,7 +598,7 @@ int main(int argc, char **argv) {
 
     int n = snprintf(cmd, sizeof(cmd),
                      "cc -O2 -Wall -Wno-unused-parameter -Wno-unused-variable "
-                     "-Wno-unused-function -Wno-comment -I%s",
+                     "-Wno-unused-function -Wno-comment -I'%s'",
                      inc_dir);
 
 #if defined(__APPLE__)
@@ -594,12 +612,12 @@ int main(int argc, char **argv) {
     }
 #endif
 
-    n += snprintf(cmd + n, sizeof(cmd) - n, " %s -o %s", cpath, outfile);
+    n += snprintf(cmd + n, sizeof(cmd) - n, " '%s' -o '%s'", cpath, outfile);
 
     if (have_notorch)
-        n += snprintf(cmd + n, sizeof(cmd) - n, " %s", libnotorch);
+        n += snprintf(cmd + n, sizeof(cmd) - n, " '%s'", libnotorch);
     if (have_aml)
-        n += snprintf(cmd + n, sizeof(cmd) - n, " %s", libaml);
+        n += snprintf(cmd + n, sizeof(cmd) - n, " '%s'", libaml);
 
     n += snprintf(cmd + n, sizeof(cmd) - n, " -lm -lpthread");
 
