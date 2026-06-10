@@ -528,13 +528,14 @@ temporal_debt       float   0–∞         Backward movement cost
 **What happens each step:**
 1. Calendar conflict: real date Hebrew-Gregorian drift, wormhole activation/decay
 2. Prophecy debt decays: `debt *= debt_decay`
-3. Temporal debt accumulates (if BACKWARD) or decays
-4. Schumann resonance: phase advance, coherence heals tension and dissonance
-5. Destiny bias: `destiny × prophecy_scale` (prophecy_scale = 1.0 + (prophecy-7)×0.02)
-6. Expert blending: weighted temperature from 4 experts + velocity mode
-7. LAW enforcement: entropy ≥ floor, resonance ≤ ceiling, emergence = (1-entropy) × resonance
-8. Presence fade: Hebbian memory decay per step
-9. 4.C Async Field Forever: season phase advance, energy gain/fade, homeostatic correction, field modulation
+3. **D4 debt-recovery override:** if `debt > 5.0` and velocity is not `NOMOVE`, the field forces `velocity_mode = NOMOVE` and recomputes effective temperature (core:7887). Automatic and self-healing — once decay brings `debt` below 5.0 the next `VELOCITY` command takes effect normally. Visible to the user as a sudden temperature drop
+4. Temporal debt accumulates (if BACKWARD) or decays
+5. Schumann resonance: phase advance, coherence heals tension and dissonance
+6. Destiny bias: `destiny × prophecy_scale` (prophecy_scale = 1.0 + (prophecy-7)×0.02)
+7. Expert blending: weighted temperature from 4 experts + velocity mode
+8. LAW enforcement: entropy ≥ floor, resonance ≤ ceiling, emergence = (1-entropy) × resonance
+9. Presence fade: Hebbian memory decay per step
+10. 4.C Async Field Forever: season phase advance, energy gain/fade, homeostatic correction, field modulation
 
 ---
 
@@ -949,6 +950,119 @@ steer_collection()
 | yent | C/Go | `c/amk_kernel.c` + `go/amk.go` | 0 + LORA_ALPHA |
 
 Projects embed (copy) AML source files. They do not link against a shared library. Each project may implement a subset of AML relevant to its needs.
+
+---
+
+## 19. TAPE — Reverse-Mode Autodiff
+
+TAPE is the autograd surface of AML Level 2: reverse-mode automatic differentiation, gradient accumulation, three optimizers, LR schedules, a NaN guard, and train/eval mode. All subcommands share the `TAPE <subcmd> [args]` prefix. Tape state (parameter registry, optimizer moment accumulators) survives `TAPE CLEAR` — only accumulated gradients are wiped. Verified against core:4335-4513.
+
+### 19.1 Lifecycle
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `TAPE START` | `TAPE START` | Begin recording; subsequent array ops join the tape |
+| `TAPE CLEAR` | `TAPE CLEAR` | Reset the tape (wipe forward pass + gradients); optimizer state preserved |
+| `TAPE PARAM` | `TAPE PARAM <var>` | Register `<var>` as a trainable parameter (before `TAPE START`) |
+| `TAPE PARAM_NO_DECAY` | `TAPE PARAM_NO_DECAY <var>` | As `TAPE PARAM` but skip weight decay (embeddings) |
+| `TAPE BACKWARD` | `TAPE BACKWARD <loss_var>` | Reverse-mode autodiff from `<loss_var>` |
+
+### 19.2 Optimizers
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `TAPE CHUCK_STEP` | `TAPE CHUCK_STEP <lr> <loss_var>` | **Chuck — the ecosystem default.** Three levels: global loss-trend window (dampen/boost), per-parameter gradient-norm modulation with converged-param freeze, stagnation-escape noise. Alias `TAPE CHUCK`. Synced with the chuck.optimizer reference |
+| `TAPE ADAMW_STEP` | `TAPE ADAMW_STEP <lr> [wd] [b1] [b2]` | Decoupled-weight-decay optimizer with bias-corrected momentum. Defaults wd=0.1, b1=0.9, b2=0.95. Alias `TAPE ADAMW` |
+| `TAPE ADAM_STEP` | `TAPE ADAM_STEP <lr>` | Classic per-parameter diagonal baseline optimizer. Alias `TAPE ADAM` |
+
+### 19.3 Clipping, accumulation, schedules, NaN guard
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `TAPE CLIP_GRADS` | `TAPE CLIP_GRADS <max_norm>` | Global-norm clip; stores the norm in `grad_norm`. Alias `TAPE CLIP` |
+| `TAPE ACCUM_GRADS` | `TAPE ACCUM_GRADS` | Save current grads into the accumulation buffer. Alias `TAPE ACCUM` |
+| `TAPE APPLY_ACCUM` | `TAPE APPLY_ACCUM <N>` | Average accumulated grads by N, copy back |
+| `TAPE LR_COSINE` / `LR_STEP` / `LR_LINEAR` | `... <base_lr> <warmup> ...` | LR schedule (cosine / step-decay / linear, each with warmup) |
+| `TAPE LR_NEXT` | `TAPE LR_NEXT <var>` | Advance the schedule, store current lr in `<var>` |
+| `TAPE NAN_CHECK` | `TAPE NAN_CHECK <var>` | Store 1 (clean) or 0 (NaN found — grads zeroed, loss scale halved) |
+| `TAPE TRAIN_MODE` / `EVAL_MODE` | — | Enable / disable dropout |
+| `TAPE SAVE` / `LOAD` | `TAPE SAVE "<path.bin>"` | Persist **model parameters** (magic `AMLE`, count, then each param's length + floats in registration order). Refuses a mismatched layout |
+
+### 19.4 Example
+
+```aml
+W = matrix(4, 3, 0.1)
+x = [1.0, 0.5, 0.2]
+TAPE PARAM W
+TAPE START
+logits = matvec(W, x)
+loss = cross_entropy(logits, 2)
+TAPE BACKWARD loss
+TAPE CLIP_GRADS 1.0
+TAPE CHUCK_STEP 0.001 loss
+TAPE CLEAR
+```
+
+`TAPE SAVE`/`LOAD` persist model parameters; the top-level `SAVE`/`LOAD` directives (§21) persist field state. The two are independent.
+
+---
+
+## 20. Async — SPAWN / AWAIT / CHANNEL
+
+Parallel execution via pthreads (verified core:4517-4591, 5889-5922; header:822-848). Each `SPAWN` block runs in its own thread with an isolated local scope but shared global field state. Threads communicate through thread-safe bounded float queues (CHANNEL). Disableable at compile time with `#define AM_ASYNC_DISABLED`.
+
+```aml
+SPAWN <name>:
+    <indented_block>
+```
+Launches the indented block in a background thread. Local variable changes do not affect the spawner; global field changes are not thread-safe without synchronization — use CHANNEL for cross-thread data.
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `AWAIT` | `AWAIT <name> [name2 ...]` | Wait for the named thread(s) |
+| `AWAIT` | `AWAIT` | Wait for all active spawned threads |
+| `CHANNEL CREATE` | `CHANNEL CREATE <name> [capacity]` | Create a named channel (capacity default 64 = `AM_CHANNEL_BUF`) |
+| `CHANNEL WRITE` | `CHANNEL WRITE <name> <value_expr>` | Write a float (blocks if full) |
+| `CHANNEL READ` | `CHANNEL READ <name> <var>` | Read one float into `<var>` (blocks if empty) |
+| `CHANNEL CLOSE` | `CHANNEL CLOSE <name>` | Deactivate a channel |
+
+```aml
+CHANNEL CREATE bus 16
+SPAWN earth:
+    forward(batch_earth)
+    CHANNEL WRITE bus 1.0
+AWAIT earth
+CHANNEL READ bus v1
+```
+
+## 21. Field Persistence — LOAD / SAVE
+
+`LOAD` and `SAVE` persist the whole `AM_State` to a binary `.soma` file (verified core:857-931, 3634-3658). Top-level directives, available in both the runner and (via lowering) in `amlc`-compiled binaries.
+
+```aml
+SAVE "state.soma"   # dump the field to disk
+LOAD "state.soma"   # restore at next awakening (silent no-op if file missing)
+```
+
+Binary format: magic `0x4F534D41` (`AMSO`, 4 bytes) · version `2` (4 bytes) · `sizeof(AM_State)` (4 bytes, ABI guard) · timestamp (8 bytes) · then the full `AM_State` image. `am_field_load` refuses a file whose magic, version, or struct size does not match the running `libaml.a`, preventing silent cross-version corruption. Per-voice co-occurrence buffers live outside `AM_State` (token-id-space-specific) and are managed separately. This persists **field state**; `TAPE SAVE`/`LOAD` (§19) persists **model parameters** — independent mechanisms.
+
+## 22. Execution Paths
+
+AML programs run through three paths:
+
+| Path | Entry | Use |
+|------|-------|-----|
+| **Interpreter** | `am_exec` / `am_exec_file` | General use; full Level 0/1/2; parse + execute in one pass |
+| **amlc transpiler** | `amlc foo.aml` | Static compile of AML + BLOOD C to a standalone binary; top-level directives lower to `am_exec()` in an `__attribute__((constructor))` so physics apply before `main()` |
+| **Bytecode** | `am_compile` / `am_exec_compiled` | Hot inference/training loops — parse once, run many times without re-parsing or string dispatch |
+
+The bytecode form (core:6246-6291, header:28-30) pre-parses each line into an opcode with pre-split args; execution is a `switch` over opcodes (no `strcmp`/`sscanf` per line). Covered: the TAPE optimizer/grad ops and the hot sequence functions (`seq_embed`, `seq_matvec`, `seq_rmsnorm`, `multi_head_attention`, `seq_cross_entropy`, `add`, `mul`, `silu`); uncovered lines fall back to the interpreter via `BC_FALLBACK`. Use it when the same AML program runs every training step; `am_exec_file` is fine for one-shot field configuration.
+
+```c
+void* am_compile(const char* script);   // parse + compile to bytecode
+int   am_exec_compiled(void* cs);       // execute (many times)
+void  am_free_compiled(void* cs);       // release
+```
 
 ---
 
