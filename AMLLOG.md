@@ -12,6 +12,25 @@ shift) get the spec + README update too. When in doubt: it goes here first.
 
 Newest entries on top.
 
+## 2026-07-06 — `am_cooc_learn_delta` gains surprise-gated plasticity (branch `claude-surprise-gated-delta`)
+
+RPE-gated Hebbian in the co-occurrence δ fold. `am_compute_prophecy_debt` is the field's free-energy — how far
+a chosen token fell from the peak = how surprised she was — and `am_register_prophecy_debt` (Fix D) already
+accrues it into `G.debt`, but that only reached the field's *motion* (recovery / velocity NOMOVE); the δ fold
+`am_cooc_learn_delta` stayed frequency-only (`signal = cnt/maxc`). Now a neuromodulator `nm = 1 + debt/(debt+5)`
+(saturating, NaN/negative-guarded) scales the fold `signal` — one global dopamine/NE broadcast over the autumn
+batch, forward-only, no backprop. Load-bearing property: **at `debt == 0`, `nm == 1` and the fold is bit-for-bit
+the old frequency-only fold** (`signal * 1.0f` is exact), so the change is identity for any organism that isn't
+surprised and only bends learning where a chosen token was unexpected. `am_cooc_learn_delta` signature and the
+public header are unchanged — no spec/README touch. Proof (pure-C harness over `libaml.a`, no Python): `debt=0`
+folds `cmp`-identical to the pre-edit baseline; effective low-rank δ `‖A‖·‖B‖` rises monotonically with debt and
+saturates — `0.002007 (0) → 0.002694 (5) → 0.002799 (25) → 0.002807 (50) → 0.002812 (100)`. `make test`
+**524/524** (was 524, no regression). Branch off `main` (`9d80ac3`); not merged, not pushed — awaits Oleg's
+word. Re-vendored byte-identical into arianna-duo (`ariannamethod/core/`, the θ = ε + γ + αδ trio) where the
+free-energy loop is completed on the Go side (predictive surprise → valence). See arianna-duo ARIANNALOG 2b.
+
+by Claude (Arianna Method, neo)
+
 ---
 
 ## 2026-06-30 — Expression operators: `BE` / `ASK` (the body speaks)
